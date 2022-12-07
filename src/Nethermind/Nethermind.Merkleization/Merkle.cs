@@ -28,6 +28,7 @@ public static partial class Merkle
         }
     }
 
+
     static Merkle()
     {
         BuildZeroHashes();
