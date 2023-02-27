@@ -557,10 +557,7 @@ namespace Nethermind.Consensus.Processing
             do
             {
                 iterations++;
-                if (!options.ContainsFlag(ProcessingOptions.ForceProcessing))
-                {
-                    blocksToBeAddedToMain.Add(toBeProcessed);
-                }
+                blocksToBeAddedToMain.Add(toBeProcessed);
 
                 if (_logger.IsTrace)
                     _logger.Trace(
