@@ -2189,7 +2189,7 @@ namespace Nethermind.Evm
                                     return CallResult.OutOfGasException;
                                 }
 
-                                stack.PushZero();
+                           //     stack.PushZero();
                             }
                             else
                             {
