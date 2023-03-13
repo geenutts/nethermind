@@ -350,7 +350,7 @@ namespace Nethermind.Evm.TransactionProcessing
 
                     if (spec.AddCoinbaseToTxAccessList)
                     {
-                        state.WarmUp(block.GasBeneficiary);
+                     //   state.WarmUp(block.GasBeneficiary);
                     }
 
                     substate = _virtualMachine.Run(state, _worldState, txTracer);
