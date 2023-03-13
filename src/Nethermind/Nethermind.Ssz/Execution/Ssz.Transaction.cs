@@ -16,11 +16,12 @@ namespace Nethermind.Ssz
     {
         public static int BlobTransactionNetworkWrapperLength(Transaction container)
         {
-            int TransactionDynamicOffset = 3 * sizeof(int) + 48;
+            int TransactionDynamicOffset = 4 * sizeof(int);
             int BlobKzgsDynamicOffset = TransactionDynamicOffset + SignedBlobTransactionLength(container);
-            int BlobsDynamicOffset = BlobKzgsDynamicOffset + (container.BlobKzgs?.Length ?? 0) * 48;
+            int BlobsDynamicOffset = BlobKzgsDynamicOffset + container.BlobKzgs?.Length ?? 0;
+            int ProofsDynamicOffset = BlobsDynamicOffset + container.Blobs?.Length ?? 0;
 
-            return BlobsDynamicOffset + (container.Blobs?.Length ?? 0) * 4096 * 32;
+            return ProofsDynamicOffset + container.BlobProofs?.Length ?? 0;
         }
 
         public static int SignedBlobTransactionLength(Transaction container) => TransactionDynamicOffset + TransactionLength(container);
@@ -46,22 +47,22 @@ namespace Nethermind.Ssz
 
         public static void EncodeSignedWrapper(Span<byte> span, Transaction transaction)
         {
-            int TransactionDynamicOffset = 3 * sizeof(int) + 48;
+            int TransactionDynamicOffset = 4 * sizeof(int);
             int BlobKzgsDynamicOffset = TransactionDynamicOffset + SignedBlobTransactionLength(transaction);
-            int BlobsDynamicOffset = BlobKzgsDynamicOffset + (transaction.BlobKzgs?.Length ?? 0) * 48;
+            int BlobsDynamicOffset = BlobKzgsDynamicOffset + transaction.BlobKzgs?.Length ?? 0;
+            int ProofsDynamicOffset = BlobsDynamicOffset + transaction.Blobs?.Length ?? 0;
 
             int offset = 0;
             Encode(span, TransactionDynamicOffset, ref offset);
             Encode(span, BlobKzgsDynamicOffset, ref offset);
             Encode(span, BlobsDynamicOffset, ref offset);
-            if(transaction.Proof is not null)
-            {
-                Encode(span, transaction.Proof, ref offset);
-            }
+            Encode(span, ProofsDynamicOffset, ref offset);
+
 
             EncodeSigned(span.Slice(TransactionDynamicOffset), transaction);
             Encode(span.Slice(BlobKzgsDynamicOffset), transaction.BlobKzgs);
             Encode(span.Slice(BlobsDynamicOffset), transaction.Blobs);
+            Encode(span.Slice(ProofsDynamicOffset), transaction.BlobProofs);
         }
 
         public static void EncodeSigned(Span<byte> span, Transaction container)
@@ -176,11 +177,12 @@ namespace Nethermind.Ssz
             DecodeDynamicOffset(span, ref offset, out int signedBlobTransactionOffset);
             DecodeDynamicOffset(span, ref offset, out int blobKzgsOffset);
             DecodeDynamicOffset(span, ref offset, out int blobsOffset);
+            DecodeDynamicOffset(span, ref offset, out int proofsOffset);
 
             Transaction transaction = DecodeSignedBlobTransaction(span.Slice(signedBlobTransactionOffset, blobKzgsOffset - signedBlobTransactionOffset));
-            transaction.BlobKzgs = DecodeBytesArrays(span, (blobsOffset - blobKzgsOffset) / 48, 48, ref blobKzgsOffset);
-            transaction.Blobs = DecodeBytesArrays(span, (span.Length - blobsOffset) / 32 / 4096, 32 * 4096, ref blobsOffset);
-            transaction.Proof = DecodeBytes(span, 48, ref offset).ToArray();
+            transaction.BlobKzgs = DecodeBytes(span, blobsOffset - blobKzgsOffset, ref blobKzgsOffset).ToArray();
+            transaction.Blobs = DecodeBytes(span, proofsOffset - blobsOffset, ref blobsOffset).ToArray();
+            transaction.BlobProofs = DecodeBytes(span, span.Length - proofsOffset, ref proofsOffset).ToArray();
             return transaction;
         }
 

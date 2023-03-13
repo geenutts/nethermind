@@ -48,5 +48,15 @@ namespace Nethermind.HashLib.Extensions
             Array.Copy(a_array, a_index, result, 0, a_count);
             return result;
         }
+
+        public static T[][] SplitInChunks<T>(this T[] a_array, int sizePerChunk)
+        {
+            T[][] result = new T[a_array.Length / sizePerChunk][];
+            for (int i = 0, j =0; i < a_array.Length; j++, i+=sizePerChunk)
+            {
+                result[j] = a_array.SubArray(i, sizePerChunk);
+            }
+            return result;
+        }
     }
 }

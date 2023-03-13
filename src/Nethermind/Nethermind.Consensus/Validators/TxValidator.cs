@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
-using System.Linq;
 using System.Numerics;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
@@ -47,7 +46,8 @@ namespace Nethermind.Consensus.Validators
 
         private bool Validate3860Rules(Transaction transaction, IReleaseSpec releaseSpec)
         {
-            bool aboveInitCode = transaction.IsContractCreation && releaseSpec.IsEip3860Enabled && transaction.DataLength > releaseSpec.MaxInitCodeSize;
+            bool aboveInitCode = transaction.IsContractCreation && releaseSpec.IsEip3860Enabled &&
+                                 transaction.DataLength > releaseSpec.MaxInitCodeSize;
             return !aboveInitCode;
         }
 
@@ -112,10 +112,10 @@ namespace Nethermind.Consensus.Validators
                 return (signature.ChainId ?? _chainIdValue) == _chainIdValue;
             }
 
-            return !spec.ValidateChainId || (signature.V == 27 || signature.V == 28);
+            return !spec.ValidateChainId || signature.V is 27 or 28;
         }
 
-        private bool Validate4844Fields(Transaction transaction)
+        private static bool Validate4844Fields(Transaction transaction)
         {
             const int maxBlobsPerTransaction = 4;
 
@@ -134,9 +134,13 @@ namespace Nethermind.Consensus.Validators
             if (transaction.BlobKzgs is not null)
             {
                 Span<byte> hash = stackalloc byte[32];
-                for (int i = 0; i < transaction.BlobVersionedHashes!.Length; i++)
+                Span<byte> commitements = transaction.BlobKzgs;
+                for (int i = 0, n = 0;
+                     i < transaction.BlobVersionedHashes!.Length;
+                     i++, n += Ckzg.Ckzg.BytesPerCommitment)
                 {
-                    if (!KzgPolynomialCommitments.TryComputeCommitmentV1(transaction.BlobKzgs[i], hash) ||
+                    if (!KzgPolynomialCommitments.TryComputeCommitmentV1(
+                            commitements[n..(n + Ckzg.Ckzg.BytesPerCommitment)], hash) ||
                         !hash.SequenceEqual(transaction.BlobVersionedHashes![i]))
                     {
                         return false;
@@ -144,8 +148,8 @@ namespace Nethermind.Consensus.Validators
                 }
             }
 
-            return KzgPolynomialCommitments.IsAggregatedProofValid(transaction.Proof, transaction.Blobs,
-                transaction.BlobKzgs);
+            return KzgPolynomialCommitments.AreProofsValid(transaction.Blobs,
+                transaction.BlobKzgs, transaction.BlobProofs);
         }
     }
 }

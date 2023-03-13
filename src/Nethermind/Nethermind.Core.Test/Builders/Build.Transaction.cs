@@ -50,9 +50,9 @@ namespace Nethermind.Core.Test.Builders
                 .WithAccessList(accessList)
                 .WithData(new byte[] { 0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 })
                 .WithBlobVersionedHashes(new byte[][] { Bytes.FromHexString("0x018a3fa172b27f3240007eb2770906ff4f4c87bb0d2118e263a4f5ef94e4683c") })
-                .WithBlobs(new byte[][] { blobData })
-                .WithBlobKzgs(new byte[][] { Bytes.FromHexString("0xb46608161d1f715b8c838da2e4fb20e5a739b0a6bb41f27847f0535975c8b9430bf32bff9ffc91cb12480f1adb1d48a2") })
-                .WithProof(Bytes.FromHexString("0x88033d1744e765ab78d5fa22af022bb5d3608dcf7c0b84515897f76b1d141a2054b2772eabbb8bd8979148164959bdc1"));
+                .WithBlobs(blobData)
+                .WithBlobKzgs(Bytes.FromHexString("0xb46608161d1f715b8c838da2e4fb20e5a739b0a6bb41f27847f0535975c8b9430bf32bff9ffc91cb12480f1adb1d48a2"))
+                .WithProofs(Bytes.FromHexString("0x88033d1744e765ab78d5fa22af022bb5d3608dcf7c0b84515897f76b1d141a2054b2772eabbb8bd8979148164959bdc1"));
 
             IEnumerable<TransactionBuilder<Transaction>> txs = new TransactionBuilder<Transaction>[] {
                 simpleEmptyTx,

@@ -5,7 +5,6 @@ using System;
 using System.Reflection.Metadata;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
-using Nethermind.Merkleization;
 using Nethermind.Serialization.Rlp;
 
 namespace Nethermind.Crypto

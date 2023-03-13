@@ -150,21 +150,21 @@ namespace Nethermind.Core.Test.Builders
             return this;
         }
 
-        public TransactionBuilder<T> WithBlobs(byte[][] blobs)
+        public TransactionBuilder<T> WithBlobs(byte[] blobs)
         {
             TestObjectInternal.Blobs = blobs;
 
             return this;
         }
-        public TransactionBuilder<T> WithBlobKzgs(byte[][] blobKzgs)
+        public TransactionBuilder<T> WithBlobKzgs(byte[] blobKzgs)
         {
             TestObjectInternal.BlobKzgs = blobKzgs;
             return this;
         }
 
-        public TransactionBuilder<T> WithProof(byte[] proof)
+        public TransactionBuilder<T> WithProofs(byte[] proofs)
         {
-            TestObjectInternal.Proof = proof;
+            TestObjectInternal.BlobProofs = proofs;
             return this;
         }
 

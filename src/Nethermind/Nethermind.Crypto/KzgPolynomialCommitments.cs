@@ -45,8 +45,28 @@ public static class KzgPolynomialCommitments
         }
     }
 
+    /// <summary>
+    ///
+    /// </summary>
+    /// <param name="commitment">Commitment to calculate hash from</param>
+    /// <param name="hashBuffer">Holds the output, can safely contain any data before the call.</param>
+    /// <returns>Result of the attempt</returns>
+    /// <exception cref="ArgumentException"></exception>
     public static bool TryComputeCommitmentV1(ReadOnlySpan<byte> commitment, Span<byte> hashBuffer)
     {
+        const int bytesPerHash = 32;
+
+        if (commitment.Length != Ckzg.Ckzg.BytesPerCommitment)
+        {
+            throw new ArgumentException($"Commitment should be {Ckzg.Ckzg.BytesPerCommitment} bytes",
+                nameof(commitment));
+        }
+
+        if (hashBuffer.Length != bytesPerHash)
+        {
+            throw new ArgumentException($"Commitment should be {bytesPerHash} bytes", nameof(hashBuffer));
+        }
+
         if (_sha256.Value!.TryComputeHash(commitment, hashBuffer, out _))
         {
             hashBuffer[0] = KzgBlobHashVersionV1;
@@ -56,48 +76,15 @@ public static class KzgPolynomialCommitments
         return false;
     }
 
-    public static unsafe bool VerifyProof(ReadOnlySpan<byte> commitment, ReadOnlySpan<byte> z, ReadOnlySpan<byte> y,
+    public static bool VerifyProof(ReadOnlySpan<byte> commitment, ReadOnlySpan<byte> z, ReadOnlySpan<byte> y,
         ReadOnlySpan<byte> proof)
     {
-        fixed (byte* commitmentPtr = commitment, zPtr = z, yPtr = y, proofPtr = proof)
-        {
-            return Ckzg.Ckzg.VerifyKzgProof(commitmentPtr, zPtr, yPtr, proofPtr, _ckzgSetup) == 0;
-        }
+        return Ckzg.Ckzg.VerifyKzgProof(commitment, z, y, proof, _ckzgSetup);
     }
 
-    public static unsafe bool IsAggregatedProofValid(byte[]? proof, byte[][]? blobs, byte[][]? commitments)
+    public static bool AreProofsValid(byte[] blobs, byte[] commitments, byte[] proofs)
     {
-        if (proof is null && blobs is null && commitments is null)
-        {
-            return true;
-        }
-
-        if (proof is null || blobs is null || commitments is null)
-        {
-            return false;
-        }
-
-        if (blobs.Length != commitments.Length)
-        {
-            return false;
-        }
-
-        byte[] flattenCommitments = new byte[commitments.Length * Ckzg.Ckzg.CommitmentLength];
-        for (int i = 0; i < commitments.Length; i++)
-        {
-            commitments[i].CopyTo(flattenCommitments, i * Ckzg.Ckzg.CommitmentLength);
-        }
-
-        byte[] flattenBlobs = new byte[blobs.Length * Ckzg.Ckzg.BlobLength];
-        for (int i = 0; i < blobs.Length; i++)
-        {
-            blobs[i].CopyTo(flattenBlobs, i * Ckzg.Ckzg.BlobLength);
-        }
-
-        fixed (byte* commitmentsPtr = flattenCommitments, blobsPtr = flattenBlobs, proofPtr = proof)
-        {
-            return Ckzg.Ckzg.VerifyAggregatedKzgProof(blobsPtr, commitmentsPtr, blobs.Length, proofPtr, _ckzgSetup) ==
-                   0;
-        }
+        return Ckzg.Ckzg.VerifyBlobKzgProofBatch(blobs, commitments, proofs, blobs.Length / Ckzg.Ckzg.BytesPerBlob,
+            _ckzgSetup);
     }
 }

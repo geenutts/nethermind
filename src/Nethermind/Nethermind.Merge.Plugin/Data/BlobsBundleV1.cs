@@ -54,8 +54,8 @@ namespace Nethermind.Merge.Plugin.Data
                 {
                     continue;
                 }
-                kzgs.AddRange(tx.BlobKzgs!);
-                blobs.AddRange(tx.Blobs!);
+                kzgs.AddRange(SplitInChunks(tx.BlobKzgs!, Ckzg.Ckzg.BytesPerCommitment));
+                blobs.AddRange(SplitInChunks(tx.Blobs!, Ckzg.Ckzg.BytesPerBlob));
             }
             Kzgs = kzgs.ToArray();
             Blobs = blobs.ToArray();
@@ -66,5 +66,24 @@ namespace Nethermind.Merge.Plugin.Data
 
         [JsonProperty(NullValueHandling = NullValueHandling.Include)]
         public Keccak? BlockHash { get; set; } = null!;
+
+        private static T[][] SplitInChunks<T>(T[] flatArray, int sizePerChunk)
+        {
+            if(flatArray.Length % sizePerChunk != 0)
+            {
+                throw new ArgumentException("Unable to split array to eqaul chunks", nameof(flatArray));
+            }
+            if(sizePerChunk <= 0)
+            {
+                throw new ArgumentException("Chunk size is not correct", nameof(sizePerChunk));
+            }
+
+            T[][] result = new T[flatArray.Length / sizePerChunk][];
+            for (int i = 0, j =0; i < flatArray.Length; j++, i+=sizePerChunk)
+            {
+                result[j] = flatArray[i..(i+sizePerChunk)];
+            }
+            return result;
+        }
     }
 }

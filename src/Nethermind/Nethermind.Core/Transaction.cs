@@ -51,9 +51,9 @@ namespace Nethermind.Core
         public byte[][]? BlobVersionedHashes { get; set; } // eip4844
 
         // Network form of blob transaction fields
-        public byte[][]? BlobKzgs { get; set; }
-        public byte[][]? Blobs { get; set; }
-        public byte[]? Proof { get; set; }
+        public byte[]? BlobKzgs { get; set; }
+        public byte[]? Blobs { get; set; }
+        public byte[]? BlobProofs { get; set; }
 
         /// <summary>
         /// Service transactions are free. The field added to handle baseFee validation after 1559
