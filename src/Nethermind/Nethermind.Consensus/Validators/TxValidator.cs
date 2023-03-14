@@ -32,16 +32,59 @@ namespace Nethermind.Consensus.Validators
         public bool IsWellFormed(Transaction transaction, IReleaseSpec releaseSpec)
         {
             // validate type before calculating intrinsic gas to avoid exception
-            return ValidateTxType(transaction, releaseSpec) &&
-                   /* This is unnecessarily calculated twice - at validation and execution times. */
-                   transaction.GasLimit >= IntrinsicGasCalculator.Calculate(transaction, releaseSpec) &&
-                   /* if it is a call or a transfer then we require the 'To' field to have a value
-                      while for an init it will be empty */
-                   ValidateSignature(transaction.Signature, releaseSpec) &&
-                   ValidateChainId(transaction) &&
-                   Validate1559GasFields(transaction, releaseSpec) &&
-                   Validate3860Rules(transaction, releaseSpec) &&
-                   Validate4844Fields(transaction);
+            bool isTxTypeValid = ValidateTxType(transaction, releaseSpec);
+            if (!isTxTypeValid)
+            {
+                Console.WriteLine("Tx type is invalid");
+                return false;
+            }
+
+            /* This is unnecessarily calculated twice - at validation and execution times. */
+            bool isGasLimitValid = transaction.GasLimit >= IntrinsicGasCalculator.Calculate(transaction, releaseSpec);
+
+            if (!isGasLimitValid)
+            {
+                Console.WriteLine("Gas limit is not vlaid {0} < {1}", transaction.GasLimit, IntrinsicGasCalculator.Calculate(transaction, releaseSpec));
+                return false;
+            }
+            /* if it is a call or a transfer then we require the 'To' field to have a value while for an init it will be empty */
+            bool isSignatureValid = ValidateSignature(transaction.Signature, releaseSpec);
+
+
+            if (!isSignatureValid)
+            {
+                Console.WriteLine("Signature is invalid");
+                return false;
+            }
+
+            bool isChainIdValid = ValidateChainId(transaction);
+            if (!isChainIdValid)
+            {
+                Console.WriteLine("Chain ID is invalid");
+                return false;
+            }
+            bool is1559GasFieldsValid =     Validate1559GasFields(transaction, releaseSpec);
+            if (!is1559GasFieldsValid)
+            {
+                Console.WriteLine("1559 Gas Fields are invalid");
+                return false;
+            }
+            bool is3860RulesValid =    Validate3860Rules(transaction, releaseSpec);
+            if (!is3860RulesValid)
+            {
+                Console.WriteLine("3860 rules are invalid");
+                return false;
+            }
+
+            bool are4844FeildsValid = Validate4844Fields(transaction);
+
+            if (!are4844FeildsValid)
+            {
+                Console.WriteLine("Tx4844Fields are invalid");
+                return false;
+            }
+
+            return true;
         }
 
         private bool Validate3860Rules(Transaction transaction, IReleaseSpec releaseSpec)

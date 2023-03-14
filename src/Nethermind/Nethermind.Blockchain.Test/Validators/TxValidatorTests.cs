@@ -17,6 +17,7 @@ using Nethermind.Specs;
 using Nethermind.Specs.Forks;
 using NSubstitute;
 using NUnit.Framework;
+using Org.BouncyCastle.Utilities.Encoders;
 
 namespace Nethermind.Blockchain.Test.Validators
 {
