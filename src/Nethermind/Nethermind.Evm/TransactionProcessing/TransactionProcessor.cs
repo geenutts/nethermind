@@ -191,12 +191,12 @@ namespace Nethermind.Evm.TransactionProcessing
                 }
             }
 
-            if (transaction.IsAboveInitCode(spec))
-            {
-                TraceLogInvalidTx(transaction, $"CREATE_TRANSACTION_SIZE_EXCEEDS_MAX_INIT_CODE_SIZE {transaction.DataLength} > {spec.MaxInitCodeSize}");
-                QuickFail(transaction, block, txTracer, eip658NotEnabled, "EIP-3860 - transaction size over max init code size");
-                return;
-            }
+            // if (transaction.IsAboveInitCode(spec))
+            // {
+            //     TraceLogInvalidTx(transaction, $"CREATE_TRANSACTION_SIZE_EXCEEDS_MAX_INIT_CODE_SIZE {transaction.DataLength} > {spec.MaxInitCodeSize}");
+            //     QuickFail(transaction, block, txTracer, eip658NotEnabled, "EIP-3860 - transaction size over max init code size");
+            //     return;
+            // }
 
             long intrinsicGas = IntrinsicGasCalculator.Calculate(transaction, spec);
             if (_logger.IsTrace) _logger.Trace($"Intrinsic gas calculated for {transaction.Hash}: " + intrinsicGas);
@@ -350,7 +350,7 @@ namespace Nethermind.Evm.TransactionProcessing
 
                     if (spec.AddCoinbaseToTxAccessList)
                     {
-                     //   state.WarmUp(block.GasBeneficiary);
+                        state.WarmUp(block.GasBeneficiary);
                     }
 
                     substate = _virtualMachine.Run(state, _worldState, txTracer);
