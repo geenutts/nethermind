@@ -148,8 +148,13 @@ namespace Nethermind.Consensus.Validators
                 }
             }
 
-            return KzgPolynomialCommitments.AreProofsValid(transaction.Blobs,
-                transaction.BlobKzgs, transaction.BlobProofs);
+            if (transaction.Blobs is not null || transaction.BlobKzgs is not null || transaction.BlobProofs is not null)
+            {
+                return KzgPolynomialCommitments.AreProofsValid(transaction.Blobs,
+                    transaction.BlobKzgs, transaction.BlobProofs);
+            }
+
+            return true;
         }
     }
 }
