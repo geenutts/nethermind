@@ -10,6 +10,7 @@ using Nethermind.Core.Specs;
 using Nethermind.Crypto;
 using Nethermind.Evm;
 using Nethermind.TxPool;
+using Org.BouncyCastle.Utilities.Encoders;
 
 namespace Nethermind.Consensus.Validators
 {
@@ -171,6 +172,7 @@ namespace Nethermind.Consensus.Validators
                 transaction.BlobVersionedHashes is null ||
                 transaction.BlobVersionedHashes?.Length > maxBlobsPerTransaction)
             {
+                Console.WriteLine("MaxFeePerDataGas {0} BlobVersionedHashes {1} len(BlobVersionedHashes) {2}", transaction.MaxFeePerDataGas, transaction.BlobVersionedHashes, transaction.BlobVersionedHashes?.Length);
                 return false;
             }
 
@@ -186,13 +188,20 @@ namespace Nethermind.Consensus.Validators
                             commitements[n..(n + Ckzg.Ckzg.BytesPerCommitment)], hash) ||
                         !hash.SequenceEqual(transaction.BlobVersionedHashes![i]))
                     {
+                        Console.WriteLine("Commitment to hash is the problem {0} vs {1}", Hex.ToHexString(hash.ToArray()), Hex.ToHexString(transaction.BlobVersionedHashes[i]));
                         return false;
                     }
                 }
             }
 
-            return KzgPolynomialCommitments.AreProofsValid(transaction.Blobs,
+            bool res = KzgPolynomialCommitments.AreProofsValid(transaction.Blobs,
                 transaction.BlobKzgs, transaction.BlobProofs);
+            if(!res)
+            {
+                Console.WriteLine("AreProofsValid = false");
+                return false;
+            }
+            return true;
         }
     }
 }
