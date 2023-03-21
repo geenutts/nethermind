@@ -7,7 +7,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Nethermind.Int256;
-using Newtonsoft.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Nethermind.Config
 {
@@ -26,7 +27,7 @@ namespace Nethermind.Config
                     //In case of collection of objects (more complex config models) we parse entire collection 
                     if (itemType.IsClass && typeof(IConfigModel).IsAssignableFrom(itemType))
                     {
-                        var objCollection = JsonConvert.DeserializeObject(valueString, valueType);
+                        var objCollection = JsonSerializer.Deserialize(valueString, valueType);
                         value = objCollection;
                     }
                     else

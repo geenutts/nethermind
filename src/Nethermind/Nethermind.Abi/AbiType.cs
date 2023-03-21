@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
+using System.Text.Json.Serialization;
+using System.Text.Json;
+using Nethermind.Blockchain.Contracts.Json;
+using Nethermind.Abi;
 
 namespace Nethermind.Abi
 {
+    [JsonConverter(typeof(AbiTypeConverter))]
     public abstract partial class AbiType
     {
         public static AbiDynamicBytes DynamicBytes => AbiDynamicBytes.Instance;
@@ -45,5 +50,35 @@ namespace Nethermind.Abi
         protected string AbiEncodingExceptionMessage => $"Argument cannot be encoded by {GetType().Name}";
 
         public abstract Type CSharpType { get; }
+    }
+}
+
+namespace Nethermind.Blockchain.Contracts.Json
+{
+    using Nethermind.Abi;
+
+    public class AbiTypeConverter : JsonConverter<AbiType>
+    {
+        public override AbiType? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+            => new AbiTypeName(reader.GetString()!);
+
+        public override void Write(Utf8JsonWriter writer, AbiType value, JsonSerializerOptions options)
+        {
+            writer.WriteStringValue(value.Name);
+        }
+
+        private class AbiTypeName : AbiType
+        {
+            public AbiTypeName(string name)
+            {
+                Name = name;
+                CSharpType = typeof(Type);
+            }
+
+            public override string Name { get; }
+            public override Type CSharpType { get; }
+            public override (object, int) Decode(byte[] data, int position, bool packed) => throw new NotSupportedException();
+            public override byte[] Encode(object? arg, bool packed) => throw new NotSupportedException();
+        }
     }
 }

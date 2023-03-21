@@ -226,7 +226,7 @@ namespace Nethermind.Core.Extensions
             return (char)value;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        //[MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool TryDecodeFromUtf8(ReadOnlySpan<byte> hex, Span<byte> bytes, bool isOdd)
         {
             Debug.Assert((hex.Length / 2) + (hex.Length % 2) == bytes.Length, "Target buffer not right-sized for provided characters");
@@ -255,9 +255,6 @@ namespace Nethermind.Core.Extensions
                 bytes[j++] = (byte)((byteHi << 4) | byteLo);
                 i += 2;
             }
-
-            if (byteLo == 0xFF)
-                i++;
 
             return (byteLo | byteHi) != 0xFF;
         }

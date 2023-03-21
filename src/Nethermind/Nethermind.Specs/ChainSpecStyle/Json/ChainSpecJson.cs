@@ -4,10 +4,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Nethermind.Core;
 using Nethermind.Int256;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace Nethermind.Specs.ChainSpecStyle.Json
 {
@@ -20,8 +20,10 @@ namespace Nethermind.Specs.ChainSpecStyle.Json
         public string DataDir { get; set; }
         public EngineJson Engine { get; set; }
         public ChainSpecParamsJson Params { get; set; }
+        [JsonPropertyName("genesis")]
         public ChainSpecGenesisJson Genesis { get; set; }
         public string[] Nodes { get; set; }
+        [JsonPropertyName("accounts")]
         public Dictionary<string, AllocationJson> Accounts { get; set; }
 
         internal class EthashEngineJson
@@ -88,9 +90,11 @@ namespace Nethermind.Specs.ChainSpecStyle.Json
             public long? PosdaoTransition { get; set; }
             public IDictionary<long, IDictionary<Address, byte[]>> RewriteBytecode { get; set; } = new Dictionary<long, IDictionary<Address, byte[]>>();
 
+            [JsonConverter(typeof(StepDurationJsonConverter))]
             public class StepDurationJson : SortedDictionary<long, long> { }
         }
 
+        [JsonConverter(typeof(BlockRewardJsonConverter))]
         public class BlockRewardJson : SortedDictionary<long, UInt256> { }
 
         internal class AuRaValidatorJson
@@ -166,13 +170,17 @@ namespace Nethermind.Specs.ChainSpecStyle.Json
 
         internal class EngineJson
         {
+            [JsonPropertyName("Ethash")]
             public EthashEngineJson Ethash { get; set; }
+            [JsonPropertyName("Clique")]
             public CliqueEngineJson Clique { get; set; }
+            [JsonPropertyName("AuthorityRound")]
             public AuraEngineJson AuthorityRound { get; set; }
+            [JsonPropertyName("NethDev")]
             public NethDevJson NethDev { get; set; }
 
             [JsonExtensionData]
-            public IDictionary<string, JToken> CustomEngineData { get; set; }
+            public Dictionary<string, JsonElement> CustomEngineData { get; set; }
         }
     }
 }
