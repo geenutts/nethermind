@@ -12,7 +12,7 @@ jobs:
         with:
           repository: ethereum/execution-spec-tests
           submodules: true
-          ref: 'v0.2.1'
+          ref: 'v0.2.4'
       - name: Checkout go-ethereum
         uses: actions/checkout@v3
         with:
