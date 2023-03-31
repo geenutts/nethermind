@@ -282,13 +282,6 @@ namespace Nethermind.Consensus.Processing
                     else
                     {
                         if (_logger.IsTrace) _logger.Trace($"Processed block {block.ToString(Block.Format.Full)}");
-
-                        bool readOnlyChain = blockRef.ProcessingOptions.ContainsFlag(ProcessingOptions.ReadOnlyChain);
-                        if (!readOnlyChain)
-                        {
-                            _stats.UpdateStats(block, _blockTree, _recoveryQueue.Count, _blockQueue.Count);
-                        }
-
                         BlockRemoved?.Invoke(this, new BlockHashEventArgs(blockRef.BlockHash, ProcessingResult.Success));
                     }
                 }
@@ -375,9 +368,10 @@ namespace Nethermind.Consensus.Processing
             }
 
             bool readonlyChain = options.ContainsFlag(ProcessingOptions.ReadOnlyChain);
+            long blockProcessingTimeInMs = _stopwatch.ElapsedMilliseconds;
             if (!readonlyChain)
             {
-                Metrics.LastBlockProcessingTimeInMs = _stopwatch.ElapsedMilliseconds;
+                Metrics.LastBlockProcessingTimeInMs = blockProcessingTimeInMs;
             }
 
             if ((options & ProcessingOptions.MarkAsProcessed) == ProcessingOptions.MarkAsProcessed)
@@ -385,12 +379,12 @@ namespace Nethermind.Consensus.Processing
                 if (_logger.IsTrace) _logger.Trace($"Marked blocks as processed {lastProcessed}, blocks count: {processedBlocks.Length}");
                 _blockTree.MarkChainAsProcessed(processingBranch.Blocks);
 
-                Metrics.LastBlockProcessingTimeInMs = _stopwatch.ElapsedMilliseconds;
+                Metrics.LastBlockProcessingTimeInMs = blockProcessingTimeInMs;
             }
 
             if (!readonlyChain)
             {
-                _stats.UpdateStats(lastProcessed, _blockTree, _recoveryQueue.Count, _blockQueue.Count);
+                _stats.UpdateStats(lastProcessed, _blockTree, _recoveryQueue.Count, _blockQueue.Count, blockProcessingTimeInMs);
             }
 
             return lastProcessed;
@@ -398,14 +392,11 @@ namespace Nethermind.Consensus.Processing
 
         public bool IsProcessingBlocks(ulong? maxProcessingInterval)
         {
-            if (_processorTask is null || _recoveryTask is null || _processorTask.IsCompleted ||
-                _recoveryTask.IsCompleted)
+            if (_processorTask is null || _recoveryTask is null || _processorTask.IsCompleted || _recoveryTask.IsCompleted)
                 return false;
 
-            if (maxProcessingInterval is not null)
-                return _lastProcessedBlock.AddSeconds(maxProcessingInterval.Value) > DateTime.UtcNow;
-            else // user does not setup interval and we cannot set interval time based on chainspec
-                return true;
+            // user does not setup interval and we cannot set interval time based on chainspec
+            return maxProcessingInterval is null || _lastProcessedBlock.AddSeconds(maxProcessingInterval.Value) > DateTime.UtcNow;
         }
 
         private void TraceFailingBranch(ProcessingBranch processingBranch, ProcessingOptions options, IBlockTracer blockTracer, DumpOptions dumpType)
@@ -519,6 +510,20 @@ namespace Nethermind.Consensus.Processing
 
                     blocksToProcess.Add(block);
                 }
+
+                if (!blocksToProcess[0].IsGenesis)
+                {
+                    BlockHeader? parentOfFirstBlock = _blockTree.FindHeader(blocksToProcess[0].ParentHash!, BlockTreeLookupOptions.None);
+                    if (parentOfFirstBlock == null)
+                    {
+                        throw new InvalidOperationException("Attempted to process a disconnected blockchain");
+                    }
+
+                    if (!_stateReader.HasStateForBlock(parentOfFirstBlock))
+                    {
+                        throw new InvalidOperationException("Attempted to process a blockchain without having starting state");
+                    }
+                }
             }
 
             if (_logger.IsTrace)
@@ -543,7 +548,7 @@ namespace Nethermind.Consensus.Processing
             do
             {
                 iterations++;
-                if (!options.ContainsFlag(ProcessingOptions.ForceProcessing))
+                if (!options.ContainsFlag(ProcessingOptions.Trace))
                 {
                     blocksToBeAddedToMain.Add(toBeProcessed);
                 }
@@ -618,8 +623,7 @@ namespace Nethermind.Consensus.Processing
                 // we need to dig deeper to go all the way to the false (reorg boundary) head
                 // otherwise some nodes would be missing
                 bool notFoundTheBranchingPointYet = !_blockTree.IsMainChain(branchingPoint.Hash!);
-                bool notReachedTheReorgBoundary = (options & ProcessingOptions.Trace) == ProcessingOptions.Trace
-                && (branchingPoint.Number > (_blockTree.Head?.Header.Number ?? 0));
+                bool notReachedTheReorgBoundary = branchingPoint.Number > (_blockTree.Head?.Header.Number ?? 0);
                 preMergeFinishBranchingCondition = (notFoundTheBranchingPointYet || notReachedTheReorgBoundary);
                 if (_logger.IsTrace)
                     _logger.Trace(
