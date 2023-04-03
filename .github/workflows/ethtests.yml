@@ -47,6 +47,6 @@ jobs:
           tf --output="fixtures" --test-categories vm
           ls fixtures/vm
           echo 1-----------------------
-          cat fixtures/vm/dup
+          ls fixtures/vm/dup
           echo 2-----------------------
-          cat fixtures/vm/chain_id
+          ls fixtures/vm/chain_id
