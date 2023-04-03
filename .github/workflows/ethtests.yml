@@ -45,4 +45,4 @@ jobs:
           source ./venv/bin/activate
           pip install -e .
           tf --output="fixtures" --test-categories vm
-          ls
+          ls fillers/vm
