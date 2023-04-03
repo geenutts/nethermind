@@ -45,7 +45,7 @@ jobs:
           source ./venv/bin/activate
           pip install -e .
           tf --output="fixtures" --test-categories withdrawals
-          ls fixtures/withdrawals
+          ls fixtures/withdrawals/withdrawals
           #echo 1-----------------------
           #cat fixtures/vm/dup/dup.json
           #echo 2-----------------------
