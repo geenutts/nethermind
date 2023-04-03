@@ -46,7 +46,7 @@ jobs:
           pip install -e .
           tf --output="fixtures" --test-categories withdrawals
           ls fixtures/withdrawals/withdrawals
-          #echo 1-----------------------
+          #echo 1-----------------------#
           #cat fixtures/vm/dup/dup.json
           #echo 2-----------------------
           #cat fixtures/vm/chain_id/chain_id.json
