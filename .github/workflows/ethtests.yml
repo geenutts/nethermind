@@ -46,3 +46,7 @@ jobs:
           pip install -e .
           tf --output="fixtures" --test-categories vm
           ls fixtures/vm
+          echo 1
+          ls fixtures/vm/dup
+          echo 2
+          ls fixtures/vm/chain_id
