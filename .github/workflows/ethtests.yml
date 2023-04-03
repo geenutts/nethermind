@@ -44,9 +44,9 @@ jobs:
           python -m venv ./venv/
           source ./venv/bin/activate
           pip install -e .
-          tf --output="fixtures" --test-categories vm
-          ls fixtures/vm
-          echo 1-----------------------
-          cat fixtures/vm/dup/dup.json
-          echo 2-----------------------
-          cat fixtures/vm/chain_id/chain_id.json
+          tf --output="fixtures" --test-categories withdrawals
+          ls fixtures/withdrawals
+          #echo 1-----------------------
+          #cat fixtures/vm/dup/dup.json
+          #echo 2-----------------------
+          #cat fixtures/vm/chain_id/chain_id.json
