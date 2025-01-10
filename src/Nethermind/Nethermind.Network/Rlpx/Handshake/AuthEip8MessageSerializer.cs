@@ -5,7 +5,6 @@ using System;
 using DotNetty.Buffers;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
-using Nethermind.Network.P2P;
 using Nethermind.Serialization.Rlp;
 
 namespace Nethermind.Network.Rlpx.Handshake
@@ -23,7 +22,7 @@ namespace Nethermind.Network.Rlpx.Handshake
         {
             int totalLength = GetLength(msg);
             // TODO: Account for the padding
-            byteBuffer.EnsureWritable(Rlp.LengthOfSequence(totalLength), true);
+            byteBuffer.EnsureWritable(Rlp.LengthOfSequence(totalLength));
             NettyRlpStream stream = new(byteBuffer);
             stream.StartSequence(totalLength);
             stream.Encode(Bytes.Concat(msg.Signature.Bytes, msg.Signature.RecoveryId));
@@ -33,7 +32,7 @@ namespace Nethermind.Network.Rlpx.Handshake
             _messagePad?.Pad(byteBuffer);
         }
 
-        public int GetLength(AuthEip8Message msg)
+        public static int GetLength(AuthEip8Message msg)
         {
             int contentLength = Rlp.LengthOf(Bytes.Concat(msg.Signature.Bytes, msg.Signature.RecoveryId))
                                 + Rlp.LengthOf(msg.PublicKey.Bytes)
@@ -52,7 +51,6 @@ namespace Nethermind.Network.Rlpx.Handshake
             authMessage.Signature = signature;
             authMessage.PublicKey = new PublicKey(rlpStream.DecodeByteArraySpan());
             authMessage.Nonce = rlpStream.DecodeByteArray();
-            _ = rlpStream.DecodeInt();
             return authMessage;
         }
     }

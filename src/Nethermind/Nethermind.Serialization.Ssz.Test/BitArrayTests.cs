@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
-using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -54,7 +53,7 @@ namespace Nethermind.Serialization.Ssz.Test
 
             // Act
             var hashTreeRoot = new byte[32];
-            Merkle.IzeBitvector(out UInt256 root, input);
+            Merkle.Ize(out UInt256 root, input);
             root.ToLittleEndian(hashTreeRoot);
 
             // Assert
@@ -98,7 +97,7 @@ namespace Nethermind.Serialization.Ssz.Test
 
             // Act
             var hashTreeRoot = new byte[32];
-            Merkle.IzeBitlist(out UInt256 root, input, maximumBitlistLength);
+            Merkle.Ize(out UInt256 root, input, maximumBitlistLength);
             root.ToLittleEndian(hashTreeRoot);
 
             // Assert

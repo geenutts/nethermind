@@ -2,20 +2,19 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
-using System.Linq;
 using DotNetty.Buffers;
 using Nethermind.Core;
+using Nethermind.Core.Collections;
 using Nethermind.Core.Extensions;
 using Nethermind.Core.Specs;
 using Nethermind.Serialization.Rlp;
 
 namespace Nethermind.Network.P2P.Subprotocols.Eth.V63.Messages
 {
-    // 3% (2GB) allocation of Goerli 3m fast sync that can be improved by implementing ZeroMessageSerializer here
     public class ReceiptsMessageSerializer : IZeroInnerMessageSerializer<ReceiptsMessage>
     {
         private readonly ISpecProvider _specProvider;
-        private readonly ReceiptMessageDecoder _decoder = new();
+        private static readonly IRlpStreamDecoder<TxReceipt> _decoder = Rlp.GetStreamDecoder<TxReceipt>();
 
         public ReceiptsMessageSerializer(ISpecProvider specProvider)
         {
@@ -26,7 +25,7 @@ namespace Nethermind.Network.P2P.Subprotocols.Eth.V63.Messages
         {
             int totalLength = GetLength(message, out int contentLength);
 
-            byteBuffer.EnsureWritable(totalLength, true);
+            byteBuffer.EnsureWritable(totalLength);
             NettyRlpStream stream = new(byteBuffer);
             stream.StartSequence(contentLength);
 
@@ -51,8 +50,6 @@ namespace Nethermind.Network.P2P.Subprotocols.Eth.V63.Messages
                     _decoder.Encode(stream, txReceipt,
                         _specProvider.GetReceiptSpec(txReceipt.BlockNumber).IsEip658Enabled ? RlpBehaviors.Eip658Receipts : RlpBehaviors.None);
                 }
-
-
             }
         }
 
@@ -75,8 +72,8 @@ namespace Nethermind.Network.P2P.Subprotocols.Eth.V63.Messages
 
         public ReceiptsMessage Deserialize(RlpStream rlpStream)
         {
-            TxReceipt[][] data = rlpStream.DecodeArray(itemContext =>
-                itemContext.DecodeArray(nestedContext => _decoder.Decode(nestedContext)) ?? Array.Empty<TxReceipt>(), true);
+            ArrayPoolList<TxReceipt[]> data = rlpStream.DecodeArrayPoolList(static itemContext =>
+                itemContext.DecodeArray(static nestedContext => _decoder.Decode(nestedContext)) ?? [], true);
             ReceiptsMessage message = new(data);
 
             return message;
@@ -86,7 +83,7 @@ namespace Nethermind.Network.P2P.Subprotocols.Eth.V63.Messages
         {
             contentLength = 0;
 
-            for (int i = 0; i < message.TxReceipts.Length; i++)
+            for (int i = 0; i < message.TxReceipts.Count; i++)
             {
                 TxReceipt?[]? txReceipts = message.TxReceipts[i];
                 if (txReceipts is null)

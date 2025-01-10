@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using Nethermind.Core;
+using Nethermind.Core.Extensions;
 using Nethermind.Logging;
 
 namespace Nethermind.Db.FullPruning
@@ -21,8 +21,8 @@ namespace Nethermind.Db.FullPruning
     /// </remarks>
     public class FullPruningDb : IDb, IFullPruningDb, ITunableDb
     {
-        private readonly RocksDbSettings _settings;
-        private readonly IRocksDbFactory _dbFactory;
+        private readonly DbSettings _settings;
+        private readonly IDbFactory _dbFactory;
         private readonly Action? _updateDuplicateWriteMetrics;
 
         // current main DB, will be written to and will be main source for reading
@@ -32,7 +32,7 @@ namespace Nethermind.Db.FullPruning
         // this will be null if no full pruning is in progress
         private PruningContext? _pruningContext;
 
-        public FullPruningDb(RocksDbSettings settings, IRocksDbFactory dbFactory, Action? updateDuplicateWriteMetrics = null)
+        public FullPruningDb(DbSettings settings, IDbFactory dbFactory, Action? updateDuplicateWriteMetrics = null)
         {
             _settings = settings;
             _dbFactory = dbFactory;
@@ -40,7 +40,7 @@ namespace Nethermind.Db.FullPruning
             _currentDb = CreateDb(_settings).WithEOACompressed();
         }
 
-        private IDb CreateDb(RocksDbSettings settings) => _dbFactory.CreateDb(settings);
+        private IDb CreateDb(DbSettings settings) => _dbFactory.CreateDb(settings);
 
         public byte[]? this[ReadOnlySpan<byte> key]
         {
@@ -51,7 +51,18 @@ namespace Nethermind.Db.FullPruning
         public byte[]? Get(ReadOnlySpan<byte> key, ReadFlags flags = ReadFlags.None)
         {
             byte[]? value = _currentDb.Get(key, flags); // we are reading from the main DB
-            if (_pruningContext?.DuplicateReads == true)
+            if (value is not null && _pruningContext?.DuplicateReads == true && (flags & ReadFlags.SkipDuplicateRead) == 0)
+            {
+                Duplicate(_pruningContext.CloningDb, key, value, WriteFlags.None);
+            }
+
+            return value;
+        }
+
+        public Span<byte> GetSpan(ReadOnlySpan<byte> key, ReadFlags flags = ReadFlags.None)
+        {
+            Span<byte> value = _currentDb.GetSpan(key, flags); // we are reading from the main DB
+            if (!value.IsNull() && _pruningContext?.DuplicateReads == true && (flags & ReadFlags.SkipDuplicateRead) == 0)
             {
                 Duplicate(_pruningContext.CloningDb, key, value, WriteFlags.None);
             }
@@ -69,17 +80,33 @@ namespace Nethermind.Db.FullPruning
             }
         }
 
-        private void Duplicate(IKeyValueStore db, ReadOnlySpan<byte> key, byte[]? value, WriteFlags flags)
+        public void PutSpan(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, WriteFlags flags = WriteFlags.None)
+        {
+            _currentDb.PutSpan(key, value, flags); // we are writing to the main DB
+            IDb? cloningDb = _pruningContext?.CloningDb;
+            if (cloningDb is not null) // if pruning is in progress we are also writing to the secondary, copied DB
+            {
+                Duplicate(cloningDb, key, value, flags);
+            }
+        }
+
+        private void Duplicate(IWriteOnlyKeyValueStore db, ReadOnlySpan<byte> key, byte[]? value, WriteFlags flags)
         {
             db.Set(key, value, flags);
             _updateDuplicateWriteMetrics?.Invoke();
         }
 
+        private void Duplicate(IWriteOnlyKeyValueStore db, ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, WriteFlags flags)
+        {
+            db.PutSpan(key, value, flags);
+            _updateDuplicateWriteMetrics?.Invoke();
+        }
+
         // we also need to duplicate writes that are in batches
-        public IBatch StartBatch() =>
+        public IWriteBatch StartWriteBatch() =>
             _pruningContext is null
-                ? _currentDb.StartBatch()
-                : new DuplicatingBatch(_currentDb.StartBatch(), _pruningContext.CloningDb.StartBatch(), this);
+                ? _currentDb.StartWriteBatch()
+                : new DuplicatingWriteBatch(_currentDb.StartWriteBatch(), _pruningContext.CloningDb.StartWriteBatch(), this);
 
         public void Dispose()
         {
@@ -87,16 +114,18 @@ namespace Nethermind.Db.FullPruning
             _pruningContext?.CloningDb.Dispose();
         }
 
-        public long GetSize() => _currentDb.GetSize() + (_pruningContext?.CloningDb.GetSize() ?? 0);
-        public long GetCacheSize() => _currentDb.GetCacheSize() + (_pruningContext?.CloningDb.GetCacheSize() ?? 0);
-        public long GetIndexSize() => _currentDb.GetIndexSize() + (_pruningContext?.CloningDb.GetIndexSize() ?? 0);
-        public long GetMemtableSize() => _currentDb.GetMemtableSize() + (_pruningContext?.CloningDb.GetMemtableSize() ?? 0);
+        public IDbMeta.DbMetric GatherMetric(bool includeSharedCache = false)
+        {
+            return _currentDb.GatherMetric(includeSharedCache);
+        }
 
         public string Name => _settings.DbName;
 
         public KeyValuePair<byte[], byte[]?>[] this[byte[][] keys] => _currentDb[keys];
 
         public IEnumerable<KeyValuePair<byte[], byte[]>> GetAll(bool ordered = false) => _currentDb.GetAll(ordered);
+
+        public IEnumerable<byte[]> GetAllKeys(bool ordered = false) => _currentDb.GetAllKeys(ordered);
 
         public IEnumerable<byte[]> GetAllValues(bool ordered = false) => _currentDb.GetAllValues(ordered);
 
@@ -115,11 +144,11 @@ namespace Nethermind.Db.FullPruning
         public IDb Innermost => this;
 
         // we need to flush both DB's
-        public void Flush()
+        public void Flush(bool onlyWal)
         {
-            _currentDb.Flush();
+            _currentDb.Flush(onlyWal);
             IDb? cloningDb = _pruningContext?.CloningDb;
-            cloningDb?.Flush();
+            cloningDb?.Flush(onlyWal);
         }
 
         // we need to clear both DB's
@@ -138,9 +167,9 @@ namespace Nethermind.Db.FullPruning
         /// <inheritdoc />
         public virtual bool TryStartPruning(bool duplicateReads, out IPruningContext context)
         {
-            RocksDbSettings ClonedDbSettings()
+            DbSettings ClonedDbSettings()
             {
-                RocksDbSettings clonedDbSettings = _settings.Clone();
+                DbSettings clonedDbSettings = _settings.Clone();
                 clonedDbSettings.DeleteOnStart = true;
                 return clonedDbSettings;
             }
@@ -195,9 +224,6 @@ namespace Nethermind.Db.FullPruning
             public bool DuplicateReads { get; }
             private readonly FullPruningDb _db;
 
-            private long _counter = 0;
-            private ConcurrentQueue<IBatch> _batches = new();
-
             public PruningContext(FullPruningDb db, IDb cloningDb, bool duplicateReads)
             {
                 CloningDb = cloningDb;
@@ -207,21 +233,12 @@ namespace Nethermind.Db.FullPruning
 
             public void Set(ReadOnlySpan<byte> key, byte[]? value, WriteFlags flags = WriteFlags.None)
             {
-                if (!_batches.TryDequeue(out IBatch currentBatch))
-                {
-                    currentBatch = CloningDb.StartBatch();
-                }
+                _db.Duplicate(CloningDb, key, value, flags);
+            }
 
-                _db.Duplicate(currentBatch, key, value, flags);
-                long val = Interlocked.Increment(ref _counter);
-                if (val % 10000 == 0)
-                {
-                    currentBatch.Dispose();
-                }
-                else
-                {
-                    _batches.Enqueue(currentBatch);
-                }
+            public IWriteBatch StartWriteBatch()
+            {
+                return CloningDb.StartWriteBatch();
             }
 
             public byte[]? Get(ReadOnlySpan<byte> key, ReadFlags flags = ReadFlags.None)
@@ -232,11 +249,6 @@ namespace Nethermind.Db.FullPruning
             /// <inheritdoc />
             public void Commit()
             {
-                foreach (IBatch batch in _batches)
-                {
-                    batch.Dispose();
-                }
-
                 _db.FinishPruning();
                 _committed = true; // we mark the context as committed.
             }
@@ -271,37 +283,32 @@ namespace Nethermind.Db.FullPruning
         /// <summary>
         /// Batch that duplicates writes to the current DB and the cloned DB batches.
         /// </summary>
-        private class DuplicatingBatch : IBatch
+        private class DuplicatingWriteBatch : IWriteBatch
         {
-            private readonly IBatch _batch;
-            private readonly IBatch _clonedBatch;
+            private readonly IWriteBatch _writeBatch;
+            private readonly IWriteBatch _clonedWriteBatch;
             private readonly FullPruningDb _db;
 
-            public DuplicatingBatch(
-                IBatch batch,
-                IBatch clonedBatch,
+            public DuplicatingWriteBatch(
+                IWriteBatch writeBatch,
+                IWriteBatch clonedWriteBatch,
                 FullPruningDb db)
             {
-                _batch = batch;
-                _clonedBatch = clonedBatch;
+                _writeBatch = writeBatch;
+                _clonedWriteBatch = clonedWriteBatch;
                 _db = db;
             }
 
             public void Dispose()
             {
-                _batch.Dispose();
-                _clonedBatch.Dispose();
-            }
-
-            public byte[]? Get(ReadOnlySpan<byte> key, ReadFlags flags = ReadFlags.None)
-            {
-                return _batch.Get(key, flags);
+                _writeBatch.Dispose();
+                _clonedWriteBatch.Dispose();
             }
 
             public void Set(ReadOnlySpan<byte> key, byte[]? value, WriteFlags flags = WriteFlags.None)
             {
-                _batch.Set(key, value, flags);
-                _db.Duplicate(_clonedBatch, key, value, flags);
+                _writeBatch.Set(key, value, flags);
+                _db.Duplicate(_clonedWriteBatch, key, value, flags);
             }
         }
 

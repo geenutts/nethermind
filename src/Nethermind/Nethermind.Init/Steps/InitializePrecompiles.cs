@@ -5,6 +5,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Nethermind.Api;
+using Nethermind.Core.Specs;
 using Nethermind.Crypto;
 using Nethermind.Logging;
 
@@ -24,10 +25,11 @@ public class InitializePrecompiles : IStep
         if (_api.SpecProvider!.GetFinalSpec().IsEip4844Enabled)
         {
             ILogger logger = _api.LogManager.GetClassLogger<InitializePrecompiles>();
+            IInitConfig initConfig = _api.Config<IInitConfig>();
 
             try
             {
-                await KzgPolynomialCommitments.InitializeAsync(logger);
+                await KzgPolynomialCommitments.InitializeAsync(logger, initConfig.KzgSetupPath);
             }
             catch (Exception e)
             {

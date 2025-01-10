@@ -11,8 +11,9 @@ using Nethermind.Core.Specs;
 using Nethermind.Facade.Eth;
 using Nethermind.JsonRpc.Modules.Eth;
 using Nethermind.Logging;
+using Nethermind.Serialization.Json;
 using Nethermind.TxPool;
-using Newtonsoft.Json;
+using System.Text.Json;
 
 namespace Nethermind.JsonRpc.Modules.Subscribe;
 
@@ -27,7 +28,7 @@ namespace Nethermind.JsonRpc.Modules.Subscribe;
 /// </remarks>
 public class SubscriptionFactory : ISubscriptionFactory
 {
-    private readonly JsonSerializer _jsonSerializer;
+    private readonly IJsonSerializer _jsonSerializer;
     private readonly ConcurrentDictionary<string, CustomSubscriptionType> _subscriptionConstructors;
 
     public SubscriptionFactory(ILogManager? logManager,
@@ -37,7 +38,7 @@ public class SubscriptionFactory : ISubscriptionFactory
         IFilterStore? filterStore,
         IEthSyncingInfo ethSyncingInfo,
         ISpecProvider specProvider,
-        JsonSerializer jsonSerializer)
+        IJsonSerializer jsonSerializer)
     {
         _jsonSerializer = jsonSerializer;
         logManager = logManager ?? throw new ArgumentNullException(nameof(logManager));
@@ -59,7 +60,7 @@ public class SubscriptionFactory : ISubscriptionFactory
                 new LogsSubscription(jsonRpcDuplexClient, receiptCanonicalityMonitor, filterStore, blockTree, logManager, filter)),
 
             [SubscriptionType.NewPendingTransactions] = CreateSubscriptionType<TransactionsOption?>((jsonRpcDuplexClient, args) =>
-                new NewPendingTransactionsSubscription(jsonRpcDuplexClient, txPool, logManager, args)),
+                new NewPendingTransactionsSubscription(jsonRpcDuplexClient, txPool, specProvider, logManager, args)),
 
             [SubscriptionType.DroppedPendingTransactions] = CreateSubscriptionType(jsonRpcDuplexClient =>
                 new DroppedPendingTransactionsSubscription(jsonRpcDuplexClient, txPool, logManager)),
@@ -78,16 +79,25 @@ public class SubscriptionFactory : ISubscriptionFactory
             IJsonRpcParam? param = null;
             bool thereIsParameter = paramType is not null;
             bool thereAreArgs = args is not null;
-            if (thereIsParameter && (thereAreArgs || paramType.CannotBeAssignedNull()))
+            JsonDocument doc = null;
+            try
             {
-                param = (IJsonRpcParam)Activator.CreateInstance(paramType);
-                if (thereAreArgs)
+                if (thereIsParameter && (thereAreArgs || paramType.CannotBeAssignedNull()))
                 {
-                    param!.ReadJson(_jsonSerializer, args);
+                    param = (IJsonRpcParam)Activator.CreateInstance(paramType);
+                    if (thereAreArgs)
+                    {
+                        doc = JsonDocument.Parse(args);
+                        param!.ReadJson(doc.RootElement, EthereumJsonSerializer.JsonOptions);
+                    }
                 }
-            }
 
-            return customSubscription.Constructor(jsonRpcDuplexClient, param);
+                return customSubscription.Constructor(jsonRpcDuplexClient, param);
+            }
+            finally
+            {
+                doc?.Dispose();
+            }
         }
 
         throw new KeyNotFoundException($"{subscriptionType} is an invalid or unregistered subscription type");

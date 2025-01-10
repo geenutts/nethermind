@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
+using System;
 using System.Linq;
 using FluentAssertions;
 using Nethermind.Core;
@@ -32,8 +33,9 @@ namespace Nethermind.Evm.Test
             Rlp rlp = BuildHeader();
 
             Transaction tx = Build.A.Transaction.WithData(rlp.Bytes).TestObject;
-            long gasCost = IntrinsicGasCalculator.Calculate(tx, Spec);
-            gasCost.Should().BeLessThan(21000 + 9600);
+            IntrinsicGas gasCost = IntrinsicGasCalculator.Calculate(tx, Spec);
+            gasCost.FloorGas.Should().Be(0);
+            gasCost.Standard.Should().BeLessThan(21000 + 9600);
         }
 
         [Test]
@@ -42,8 +44,9 @@ namespace Nethermind.Evm.Test
             Rlp rlp = BuildHeader();
 
             Transaction tx = Build.A.Transaction.WithData(rlp.Bytes).TestObject;
-            long gasCost = IntrinsicGasCalculator.Calculate(tx, Spec);
-            gasCost.Should().BeLessThan(21000 + 9600);
+            var gasCost = IntrinsicGasCalculator.Calculate(tx, Spec);
+            gasCost.FloorGas.Should().Be(0);
+            gasCost.Standard.Should().BeLessThan(21000 + 9600);
 
             byte[] bytecode =
                 Prepare.EvmCode
@@ -53,7 +56,7 @@ namespace Nethermind.Evm.Test
                     .Op(Instruction.CALLDATACOPY)
                     .PushData("0x0200")
                     .PushData(0)
-                    .Op(Instruction.SHA3)
+                    .Op(Instruction.KECCAK256)
                     .Done;
 
             (Block block, Transaction transaction) = PrepareTx(

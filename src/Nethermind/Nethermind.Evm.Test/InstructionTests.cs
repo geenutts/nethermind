@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using FluentAssertions;
+using Nethermind.Specs.Forks;
 using NUnit.Framework;
 
 namespace Nethermind.Evm.Test
@@ -11,13 +12,13 @@ namespace Nethermind.Evm.Test
         [Test]
         public void Return_difficulty_name_for_prevrandao_opcode_for_pre_merge()
         {
-            Instruction.PREVRANDAO.GetName(false).Should().Be("DIFFICULTY");
+            Instruction.PREVRANDAO.GetName(false, Cancun.Instance).Should().Be("DIFFICULTY");
         }
 
         [Test]
         public void Return_prevrandao_name_for_prevrandao_opcode_for_post_merge()
         {
-            Instruction.PREVRANDAO.GetName(true).Should().Be("PREVRANDAO");
+            Instruction.PREVRANDAO.GetName(true, Cancun.Instance).Should().Be("PREVRANDAO");
         }
     }
 }

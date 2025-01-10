@@ -7,6 +7,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Numerics;
+using System.Text.Json.Serialization;
+
 using Ethereum.Test.Base;
 using Nethermind.Core;
 using Nethermind.Core.Extensions;
@@ -37,20 +39,20 @@ namespace Ethereum.Basic.Test
         [TestCaseSource(nameof(LoadTests))]
         public void Test(TransactionTest test)
         {
-            EthereumEcdsa ethereumEcdsa = new EthereumEcdsa(TestBlockchainIds.ChainId, LimboLogs.Instance);
+            EthereumEcdsa ethereumEcdsa = new EthereumEcdsa(TestBlockchainIds.ChainId);
             Transaction decodedUnsigned = Rlp.Decode<Transaction>(test.Unsigned);
             Assert.That(decodedUnsigned.Value, Is.EqualTo(test.Value), "value");
             Assert.That(decodedUnsigned.GasPrice, Is.EqualTo(test.GasPrice), "gasPrice");
             Assert.That(decodedUnsigned.GasLimit, Is.EqualTo(test.StartGas), "gasLimit");
-            Assert.That(decodedUnsigned.Data, Is.EqualTo(test.Data), "data");
+            Assert.That(decodedUnsigned.Data.AsArray(), Is.EqualTo(test.Data), "data");
             Assert.That(decodedUnsigned.To, Is.EqualTo(test.To), "to");
             Assert.That(decodedUnsigned.Nonce, Is.EqualTo(test.Nonce), "nonce");
 
             Transaction decodedSigned = Rlp.Decode<Transaction>(test.Signed);
             ethereumEcdsa.Sign(test.PrivateKey, decodedUnsigned, false);
-            Assert.That(decodedUnsigned.Signature.R, Is.EqualTo(decodedSigned.Signature.R), "R");
-            BigInteger expectedS = decodedSigned.Signature.S.ToUnsignedBigInteger();
-            BigInteger actualS = decodedUnsigned.Signature.S.ToUnsignedBigInteger();
+            Assert.That(decodedUnsigned.Signature.R.Span.SequenceEqual(decodedSigned.Signature.R.Span), "R");
+            BigInteger expectedS = decodedSigned.Signature.S.Span.ToUnsignedBigInteger();
+            BigInteger actualS = decodedUnsigned.Signature.S.Span.ToUnsignedBigInteger();
             BigInteger otherS = EthereumEcdsa.LowSTransform - actualS;
 
             // test does not use normalized signature
@@ -60,7 +62,7 @@ namespace Ethereum.Basic.Test
             }
 
             ulong vToCompare = decodedUnsigned.Signature.V;
-            if (otherS == decodedSigned.Signature.S.ToUnsignedBigInteger())
+            if (otherS == decodedSigned.Signature.S.Span.ToUnsignedBigInteger())
             {
                 vToCompare = vToCompare == 27ul ? 28ul : 27ul;
             }

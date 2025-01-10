@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using Nethermind.Core;
-using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
 using Nethermind.Specs;
-using Nethermind.Core.Test.Builders;
 using Nethermind.State;
+using Nethermind.Core.Test.Builders;
 using NUnit.Framework;
 
 namespace Nethermind.Evm.Test
@@ -57,11 +56,11 @@ namespace Nethermind.Evm.Test
                 .Done;
 
             TestAllTracerWithOutput receipt = Execute(code);
-            byte[] result = TestState.Get(storageCell);
+            byte[] result = TestState.Get(storageCell).ToArray();
             Assert.That(result, Is.EqualTo(new byte[] { 0 }), "storage reverted");
             Assert.That(receipt.GasSpent, Is.EqualTo(98777), "no refund");
 
-            byte[] returnData = TestState.Get(new StorageCell(TestItem.AddressC, 0));
+            byte[] returnData = TestState.Get(new StorageCell(TestItem.AddressC, 0)).ToArray();
             Assert.That(returnData, Is.EqualTo(new byte[1]), "address returned");
         }
 
@@ -97,11 +96,11 @@ namespace Nethermind.Evm.Test
                 .Done;
 
             TestAllTracerWithOutput receipt = Execute(code);
-            byte[] result = TestState.Get(storageCell);
+            byte[] result = TestState.Get(storageCell).ToArray();
             Assert.That(result, Is.EqualTo(new byte[] { 0 }), "storage reverted");
             Assert.That(receipt.GasSpent, Is.EqualTo(83199), "with refund");
 
-            byte[] returnData = TestState.Get(new StorageCell(TestItem.AddressC, 0));
+            byte[] returnData = TestState.Get(new StorageCell(TestItem.AddressC, 0)).ToArray();
             Assert.That(returnData, Is.EqualTo(deployed.Bytes), "address returned");
         }
     }

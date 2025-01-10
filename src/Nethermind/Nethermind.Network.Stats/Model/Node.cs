@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
-using System.Collections.Generic;
 using System.Net;
 using Nethermind.Config;
 using Nethermind.Core.Crypto;
@@ -12,7 +11,7 @@ namespace Nethermind.Stats.Model
     /// <summary>
     /// Represents a physical network node address and attributes that we assign to it (static, bootnode, trusted, etc.)
     /// </summary>
-    public class Node : IFormattable
+    public sealed class Node : IFormattable, IEquatable<Node>
     {
         private string _clientId;
         private string _paddedHost;
@@ -26,12 +25,13 @@ namespace Nethermind.Stats.Model
         /// <summary>
         /// Hash of the node ID used extensively in discovery and kept here to avoid rehashing.
         /// </summary>
-        public Keccak IdHash { get; }
+        public Hash256 IdHash { get; }
 
         /// <summary>
         /// Host part of the network node.
         /// </summary>
-        public string Host { get; private set; }
+        public string Host => _host ??= Address?.Address?.MapToIPv4()?.ToString();
+        private string _host;
 
         /// <summary>
         /// Port part of the network node.
@@ -71,40 +71,60 @@ namespace Nethermind.Stats.Model
         public string EthDetails { get; set; }
         public long CurrentReputation { get; set; }
 
-        public Node(PublicKey id, IPEndPoint address)
-        {
-            Id = id;
-            IdHash = Keccak.Compute(Id.PrefixedBytes);
-            SetIPEndPoint(address);
-        }
-
         public Node(NetworkNode networkNode, bool isStatic = false)
             : this(networkNode.NodeId, networkNode.Host, networkNode.Port, isStatic)
         {
         }
 
         public Node(PublicKey id, string host, int port, bool isStatic = false)
+            : this(id, GetIPEndPoint(host, port), isStatic)
+        {
+        }
+
+        public Node(PublicKey id, IPEndPoint address, bool isStatic = false)
         {
             Id = id;
             IdHash = Keccak.Compute(Id.PrefixedBytes);
-            SetIPEndPoint(host, port);
             IsStatic = isStatic;
+            SetIPEndPoint(address);
+        }
+
+        private static readonly string[] _ports = CreateCommonPortStrings();
+
+        private static string[] CreateCommonPortStrings()
+        {
+            var ports = new string[100];
+            for (int i = 0; ports.Length < 100; i++)
+            {
+                ports[i] = (i + 30300).ToString().PadLeft(5, ' ');
+            }
+
+            return ports;
         }
 
         private void SetIPEndPoint(IPEndPoint address)
         {
-            Host = address.Address.MapToIPv4().ToString();
             Port = address.Port;
             Address = address;
-            // xxx.xxx.xxx.xxx = 15
-            _paddedHost = Host.PadLeft(15, ' ');
-            // Port are up to 65535 => 5 chars
-            _paddedPort = Port.ToString().PadLeft(5, ' ');
+            _host = null;
+            _paddedHost = null;
+            _paddedPort = null;
         }
 
-        private void SetIPEndPoint(string host, int port)
+        // xxx.xxx.xxx.xxx = 15
+        private string PaddedHost => _paddedHost ??= Host.PadLeft(15, ' ');
+        private string PaddedPort
         {
-            SetIPEndPoint(new IPEndPoint(IPAddress.Parse(host), port));
+            get
+            {
+                // Port are up to 65535 => 5 chars
+                return _paddedPort ??= (Port >= 30300 && Port <= 30399) ? _ports[Port - 30300] : Port.ToString().PadLeft(5, ' ');
+            }
+        }
+
+        private static IPEndPoint GetIPEndPoint(string host, int port)
+        {
+            return new IPEndPoint(IPAddress.Parse(host), port);
         }
 
         public override bool Equals(object obj)
@@ -122,7 +142,7 @@ namespace Nethermind.Stats.Model
             return false;
         }
 
-        public override int GetHashCode() => HashCode.Combine(Id);
+        public override int GetHashCode() => Id.GetHashCode();
 
         public override string ToString() => ToString(Format.WithPublicKey);
 
@@ -133,7 +153,7 @@ namespace Nethermind.Stats.Model
             return format switch
             {
                 Format.Short => $"{Host}:{Port}",
-                Format.AlignedShort => $"{_paddedHost}:{_paddedPort}",
+                Format.AlignedShort => $"{PaddedHost}:{PaddedPort}",
                 Format.Console => $"[Node|{Host}:{Port}|{EthDetails}|{ClientId}]",
                 Format.WithId => $"enode://{Id.ToString(false)}@{Host}:{Port}|{ClientId}",
                 Format.ENode => $"enode://{Id.ToString(false)}@{Host}:{Port}",
@@ -142,14 +162,19 @@ namespace Nethermind.Stats.Model
             };
         }
 
+        public bool Equals(Node other)
+        {
+            if (ReferenceEquals(this, other)) return true;
+            if (other is null) return false;
+
+            return Id.Equals(other.Id);
+        }
+
         public static bool operator ==(Node a, Node b)
         {
-            if (ReferenceEquals(a, null))
-            {
-                return ReferenceEquals(b, null);
-            }
+            if (ReferenceEquals(a, b)) return true;
 
-            if (ReferenceEquals(b, null))
+            if (a is null || b is null)
             {
                 return false;
             }
@@ -168,27 +193,35 @@ namespace Nethermind.Stats.Model
             {
                 return NodeClientType.Unknown;
             }
-            else if (clientId.Contains("BeSu", StringComparison.InvariantCultureIgnoreCase))
+            else if (clientId.Contains(nameof(NodeClientType.Besu), StringComparison.OrdinalIgnoreCase))
             {
-                return NodeClientType.BeSu;
+                return NodeClientType.Besu;
             }
-            else if (clientId.Contains("Geth", StringComparison.InvariantCultureIgnoreCase))
+            else if (clientId.Contains(nameof(NodeClientType.Geth), StringComparison.OrdinalIgnoreCase))
             {
                 return NodeClientType.Geth;
             }
-            else if (clientId.Contains("Nethermind", StringComparison.InvariantCultureIgnoreCase))
+            else if (clientId.Contains(nameof(NodeClientType.Nethermind), StringComparison.OrdinalIgnoreCase))
             {
                 return NodeClientType.Nethermind;
             }
-            else if (clientId.Contains("Parity", StringComparison.InvariantCultureIgnoreCase))
+            else if (clientId.Contains(nameof(NodeClientType.Erigon), StringComparison.OrdinalIgnoreCase))
+            {
+                return NodeClientType.Erigon;
+            }
+            else if (clientId.Contains(nameof(NodeClientType.Reth), StringComparison.OrdinalIgnoreCase))
+            {
+                return NodeClientType.Reth;
+            }
+            else if (clientId.Contains(nameof(NodeClientType.Parity), StringComparison.OrdinalIgnoreCase))
             {
                 return NodeClientType.Parity;
             }
-            else if (clientId.Contains("OpenEthereum", StringComparison.InvariantCultureIgnoreCase))
+            else if (clientId.Contains(nameof(NodeClientType.OpenEthereum), StringComparison.OrdinalIgnoreCase))
             {
                 return NodeClientType.OpenEthereum;
             }
-            else if (clientId.Contains("Trinity", StringComparison.InvariantCultureIgnoreCase))
+            else if (clientId.Contains(nameof(NodeClientType.Trinity), StringComparison.OrdinalIgnoreCase))
             {
                 return NodeClientType.Trinity;
             }

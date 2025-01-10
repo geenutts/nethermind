@@ -27,7 +27,7 @@ namespace Nethermind.Hive
         private readonly IConfigProvider _configurationProvider;
         private readonly IFileSystem _fileSystem;
         private readonly IBlockValidator _blockValidator;
-        private SemaphoreSlim _resetEvent;
+        private readonly SemaphoreSlim _resetEvent;
         private bool BlockSuggested;
 
         public HiveRunner(
@@ -38,7 +38,7 @@ namespace Nethermind.Hive
             IFileSystem fileSystem,
             IBlockValidator blockValidator)
         {
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _logger = logger;
             _blockTree = blockTree ?? throw new ArgumentNullException(nameof(blockTree));
             _blockProcessingQueue = blockProcessingQueue ?? throw new ArgumentNullException(nameof(blockProcessingQueue));
             _configurationProvider = configurationProvider ?? throw new ArgumentNullException(nameof(configurationProvider));
@@ -112,11 +112,6 @@ namespace Nethermind.Hive
             }
         }
 
-        public async Task StopAsync()
-        {
-            await Task.CompletedTask;
-        }
-
         private async Task InitializeBlocks(string blocksDir, CancellationToken cancellationToken)
         {
             if (!Directory.Exists(blocksDir))
@@ -127,7 +122,7 @@ namespace Nethermind.Hive
 
             if (_logger.IsInfo) _logger.Info($"HIVE Loading blocks from {blocksDir}");
 
-            string[] files = Directory.GetFiles(blocksDir).OrderBy(x => x).ToArray();
+            string[] files = Directory.GetFiles(blocksDir).OrderBy(static x => x).ToArray();
             if (_logger.IsInfo) _logger.Info($"Loaded {files.Length} files with blocks to process.");
 
             foreach (string file in files)
@@ -191,7 +186,7 @@ namespace Nethermind.Hive
             return Rlp.Decode<Block>(blockRlp);
         }
 
-        private async Task WaitForBlockProcessing(SemaphoreSlim semaphore)
+        private static async Task WaitForBlockProcessing(SemaphoreSlim semaphore)
         {
             if (!await semaphore.WaitAsync(5000))
             {
@@ -206,7 +201,7 @@ namespace Nethermind.Hive
                 // Start of block processing, setting flag BlockSuggested to default value: false
                 BlockSuggested = false;
 
-                if (!_blockValidator.ValidateSuggestedBlock(block))
+                if (!_blockValidator.ValidateSuggestedBlock(block, out _))
                 {
                     if (_logger.IsInfo) _logger.Info($"Invalid block {block}");
                     return;

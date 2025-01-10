@@ -10,8 +10,9 @@ namespace Nethermind.Config
 {
     public class BlocksConfig : IBlocksConfig
     {
-        private byte[] _extraDataBytes = Encoding.UTF8.GetBytes("Nethermind");
-        private string _extraDataString = "Nethermind";
+        public const string DefaultExtraData = "Nethermind";
+        private byte[] _extraDataBytes = Encoding.UTF8.GetBytes(DefaultExtraData);
+        private string _extraDataString = DefaultExtraData;
 
         public bool Enabled { get; set; }
         public long? TargetBlockGasLimit { get; set; } = null;
@@ -22,6 +23,11 @@ namespace Nethermind.Config
 
         public ulong SecondsPerSlot { get; set; } = 12;
 
+        public bool PreWarmStateOnBlockProcessing { get; set; } = true;
+
+        public int BlockProductionTimeoutMs { get; set; } = 4_000;
+
+        public int GenesisTimeoutMs { get; set; } = 40_000;
 
         public string ExtraData
         {
@@ -32,7 +38,7 @@ namespace Nethermind.Config
             set
             {
                 byte[] bytes = Encoding.UTF8.GetBytes(value);
-                if (bytes != null && bytes.Length > 32)
+                if (bytes is not null && bytes.Length > 32)
                 {
                     throw new InvalidConfigurationException($"Extra Data length was more than 32 bytes. You provided: {_extraDataString}",
                         ExitCodes.TooLongExtraData);
@@ -47,5 +53,9 @@ namespace Nethermind.Config
         {
             return _extraDataBytes;
         }
+
+        public string GasToken { get => GasTokenTicker; set => GasTokenTicker = value; }
+
+        public static string GasTokenTicker { get; set; } = "ETH";
     }
 }

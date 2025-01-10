@@ -24,11 +24,11 @@ namespace Nethermind.Store.Test
             Account account = new(1);
             StateTree stateTree = new();
             stateTree.Set(TestItem.AddressA, account);
-            stateTree.Commit(0);
+            stateTree.Commit();
 
             account = account.WithChangedBalance(2);
             stateTree.Set(TestItem.AddressA, account);
-            stateTree.Commit(0);
+            stateTree.Commit();
 
             Account accountRestored = stateTree.Get(TestItem.AddressA);
             Assert.That(accountRestored.Balance, Is.EqualTo((UInt256)2));
@@ -41,11 +41,11 @@ namespace Nethermind.Store.Test
             StateTree stateTree = new();
             stateTree.Set(TestItem.AddressA, account);
             stateTree.Set(TestItem.AddressB, account);
-            stateTree.Commit(0);
+            stateTree.Commit();
 
             account = account.WithChangedBalance(2);
             stateTree.Set(TestItem.AddressA, account);
-            stateTree.Commit(0);
+            stateTree.Commit();
 
             Account accountRestored = stateTree.Get(TestItem.AddressA);
             Assert.That(accountRestored.Balance, Is.EqualTo((UInt256)2));
@@ -58,16 +58,16 @@ namespace Nethermind.Store.Test
             Account account = new(1);
             StateTree stateTree = new(new TrieStore(db, LimboLogs.Instance), LimboLogs.Instance);
             stateTree.Set(TestItem.AddressA, account);
-            stateTree.Commit(0);
+            stateTree.Commit();
 
-            Keccak rootHash = stateTree.RootHash;
+            Hash256 rootHash = stateTree.RootHash;
             stateTree.RootHash = null;
 
             stateTree.RootHash = rootHash;
             stateTree.Get(TestItem.AddressA);
             account = account.WithChangedBalance(2);
             stateTree.Set(TestItem.AddressA, account);
-            stateTree.Commit(0);
+            stateTree.Commit();
 
             Assert.That(db.Keys.Count, Is.EqualTo(2));
         }
@@ -83,16 +83,16 @@ namespace Nethermind.Store.Test
             StateTree stateTree = new(trieStore, LimboLogs.Instance);
             stateTree.Set(TestItem.AddressA, account);
             stateTree.UpdateRootHash();
-            Keccak stateRoot = stateTree.RootHash;
-            stateTree.Commit(0, skipRoot);
+            Hash256 stateRoot = stateTree.RootHash;
+            stateTree.Commit(skipRoot);
 
             if (hasRoot)
             {
-                trieStore.LoadRlp(stateRoot).Length.Should().BeGreaterThan(0);
+                trieStore.LoadRlp(null, TreePath.Empty, stateRoot).Length.Should().BeGreaterThan(0);
             }
             else
             {
-                trieStore.Invoking(ts => ts.LoadRlp(stateRoot)).Should().Throw<TrieException>();
+                trieStore.Invoking(ts => ts.LoadRlp(null, TreePath.Empty, stateRoot)).Should().Throw<TrieException>();
             }
         }
     }

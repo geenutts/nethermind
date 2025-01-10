@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 using Nethermind.Consensus.Producers;
 using Nethermind.Core;
@@ -46,7 +45,7 @@ public class PayloadPreparationService : IPayloadPreparationService
     private readonly TimeSpan _timePerSlot;
 
     // first ExecutionPayloadV1 is empty (without txs), second one is the ideal one
-    private readonly ConcurrentDictionary<string, IBlockImprovementContext> _payloadStorage = new();
+    protected readonly ConcurrentDictionary<string, IBlockImprovementContext> _payloadStorage = new();
 
     public PayloadPreparationService(
         PostMergeBlockProducer blockProducer,
@@ -74,7 +73,7 @@ public class PayloadPreparationService : IPayloadPreparationService
 
     public string StartPreparingPayload(BlockHeader parentHeader, PayloadAttributes payloadAttributes)
     {
-        string payloadId = payloadAttributes.ComputePayloadId(parentHeader);
+        string payloadId = payloadAttributes.GetPayloadId(parentHeader);
         if (!_payloadStorage.ContainsKey(payloadId))
         {
             Block emptyBlock = ProduceEmptyBlock(payloadId, parentHeader, payloadAttributes);
@@ -85,7 +84,7 @@ public class PayloadPreparationService : IPayloadPreparationService
         return payloadId;
     }
 
-    private Block ProduceEmptyBlock(string payloadId, BlockHeader parentHeader, PayloadAttributes payloadAttributes)
+    protected virtual Block ProduceEmptyBlock(string payloadId, BlockHeader parentHeader, PayloadAttributes payloadAttributes)
     {
         if (_logger.IsTrace) _logger.Trace($"Preparing empty block from payload {payloadId} with parent {parentHeader}");
         Block emptyBlock = _blockProducer.PrepareEmptyBlock(parentHeader, payloadAttributes);
@@ -93,7 +92,7 @@ public class PayloadPreparationService : IPayloadPreparationService
         return emptyBlock;
     }
 
-    private void ImproveBlock(string payloadId, BlockHeader parentHeader, PayloadAttributes payloadAttributes, Block currentBestBlock, DateTimeOffset startDateTime) =>
+    protected virtual void ImproveBlock(string payloadId, BlockHeader parentHeader, PayloadAttributes payloadAttributes, Block currentBestBlock, DateTimeOffset startDateTime) =>
         _payloadStorage.AddOrUpdate(payloadId,
             id => CreateBlockImprovementContext(id, parentHeader, payloadAttributes, currentBestBlock, startDateTime),
             (id, currentContext) =>
@@ -205,7 +204,7 @@ public class PayloadPreparationService : IPayloadPreparationService
         {
             using (blockContext)
             {
-                bool currentBestBlockIsEmpty = blockContext.CurrentBestBlock?.Transactions.Any() != true;
+                bool currentBestBlockIsEmpty = blockContext.CurrentBestBlock?.Transactions.Length == 0;
                 if (currentBestBlockIsEmpty && !blockContext.ImprovementTask.IsCompleted)
                 {
                     await Task.WhenAny(blockContext.ImprovementTask, Task.Delay(GetPayloadWaitForFullBlockMillisecondsDelay));

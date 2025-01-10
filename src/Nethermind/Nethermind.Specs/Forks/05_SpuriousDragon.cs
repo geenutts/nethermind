@@ -2,9 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System.Threading;
-using Nethermind.Core;
 using Nethermind.Core.Specs;
-using Nethermind.Int256;
 
 namespace Nethermind.Specs.Forks
 {
@@ -22,6 +20,6 @@ namespace Nethermind.Specs.Forks
             IsEip170Enabled = true;
         }
 
-        public new static IReleaseSpec Instance => LazyInitializer.EnsureInitialized(ref _instance, () => new SpuriousDragon());
+        public new static IReleaseSpec Instance => LazyInitializer.EnsureInitialized(ref _instance, static () => new SpuriousDragon());
     }
 }

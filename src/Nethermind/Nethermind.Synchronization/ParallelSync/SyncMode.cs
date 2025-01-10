@@ -63,12 +63,40 @@ namespace Nethermind.Synchronization.ParallelSync
         /// </summary>
         UpdatingPivot = 8192,
 
-        All = WaitingForBlock | Disconnected | FastBlocks | FastSync | StateNodes | StateNodes | Full | DbLoad |
+        All = WaitingForBlock | Disconnected | FastBlocks | FastSync | StateNodes | Full | DbLoad |
               FastHeaders | FastBodies | FastReceipts | SnapSync | BeaconHeaders | UpdatingPivot
     }
 
     public static class SyncModeExtensions
     {
-        public static bool NotSyncing(this SyncMode syncMode) => syncMode == SyncMode.WaitingForBlock || syncMode == SyncMode.Disconnected;
+        public static bool NotSyncing(this SyncMode syncMode) => syncMode is SyncMode.WaitingForBlock or SyncMode.Disconnected;
+
+        public static bool HaveNotSyncedBodiesYet(this SyncMode syncMode) =>
+            syncMode.HasFlag(SyncMode.FastHeaders) ||
+            syncMode.HasFlag(SyncMode.FastBodies) ||
+            syncMode.HasFlag(SyncMode.FastSync) ||
+            syncMode.HasFlag(SyncMode.StateNodes) ||
+            syncMode.HasFlag(SyncMode.SnapSync) ||
+            syncMode.HasFlag(SyncMode.BeaconHeaders) ||
+            syncMode.HasFlag(SyncMode.UpdatingPivot);
+
+        public static bool HaveNotSyncedReceiptsYet(this SyncMode syncMode) =>
+            syncMode.HasFlag(SyncMode.FastBlocks) ||
+            syncMode.HasFlag(SyncMode.FastSync) ||
+            syncMode.HasFlag(SyncMode.StateNodes) ||
+            syncMode.HasFlag(SyncMode.SnapSync) ||
+            syncMode.HasFlag(SyncMode.BeaconHeaders) ||
+            syncMode.HasFlag(SyncMode.UpdatingPivot);
+
+        public static bool HaveNotSyncedHeadersYet(this SyncMode syncMode) =>
+            syncMode.HasFlag(SyncMode.FastHeaders) ||
+            syncMode.HasFlag(SyncMode.BeaconHeaders) ||
+            syncMode.HasFlag(SyncMode.UpdatingPivot);
+
+        public static bool HaveNotSyncedStateYet(this SyncMode syncMode) =>
+            syncMode.HasFlag(SyncMode.FastSync) ||
+            syncMode.HasFlag(SyncMode.StateNodes) ||
+            syncMode.HasFlag(SyncMode.SnapSync) ||
+            syncMode.HasFlag(SyncMode.UpdatingPivot);
     }
 }

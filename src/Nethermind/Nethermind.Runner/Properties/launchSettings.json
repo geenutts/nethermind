@@ -1,127 +1,135 @@
 {
   "profiles": {
+    "Base Mainnet": {
+      "commandName": "Project",
+      "commandLineArgs": "-c base-mainnet --data-dir .data",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "Base Sepolia": {
+      "commandName": "Project",
+      "commandLineArgs": "-c base-sepolia --data-dir .data",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
     "Chiado": {
       "commandName": "Project",
-      "commandLineArgs": "-c chiado -dd %NETHERMIND_DATA_DIR%",
-      "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
-      }
-    },
-    "Chiado (archive)": {
-      "commandName": "Project",
-      "commandLineArgs": "-c chiado_archive -dd %NETHERMIND_DATA_DIR%",
-      "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
-      }
-    },
-    "EIP-4844 local trace": {
-      "commandName": "Project",
-      "commandLineArgs": "-c eip4844_local -dd %NETHERMIND_DATA_DIR% --log TRACE",
+      "commandLineArgs": "-c chiado --data-dir .data",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
     "Energy Web": {
       "commandName": "Project",
-      "commandLineArgs": "-c energyweb -dd %NETHERMIND_DATA_DIR% --JsonRpc.Enabled true",
+      "commandLineArgs": "-c energyweb --data-dir .data --jsonrpc-enabled true",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
     "Gnosis": {
       "commandName": "Project",
-      "commandLineArgs": "-c gnosis -dd %NETHERMIND_DATA_DIR%",
-      "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
-      }
-    },
-    "Gnosis (archive)": {
-      "commandName": "Project",
-      "commandLineArgs": "-c gnosis_archive -dd %NETHERMIND_DATA_DIR%",
-      "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
-      }
-    },
-    "Goerli": {
-      "commandName": "Project",
-      "commandLineArgs": "-c goerli -dd %NETHERMIND_DATA_DIR%",
-      "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
-      }
-    },
-    "Goerli (archive)": {
-      "commandName": "Project",
-      "commandLineArgs": "-c goerli_archive -dd %NETHERMIND_DATA_DIR%",
+      "commandLineArgs": "-c gnosis --data-dir .data",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
     "Hive": {
       "commandName": "Project",
-      "commandLineArgs": "-c hive -dd %NETHERMIND_DATA_DIR% --Init.DiagnosticMode MemDb",
+      "commandLineArgs": "-c hive --data-dir .data --init-diagnosticmode MemDb",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
-    "Kovan": {
+    "Holesky": {
       "commandName": "Project",
-      "commandLineArgs": "-c kovan -dd %NETHERMIND_DATA_DIR% --JsonRpc.Enabled true",
+      "commandLineArgs": "-c holesky --data-dir .data",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "JOC Mainnet": {
+      "commandName": "Project",
+      "commandLineArgs": "-c joc-mainnet -dd .data",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "JOC Testnet": {
+      "commandName": "Project",
+      "commandLineArgs": "-c joc-testnet --data-dir .data",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
     "Mainnet": {
       "commandName": "Project",
-      "commandLineArgs": "-c mainnet -dd %NETHERMIND_DATA_DIR%",
+      "commandLineArgs": "-c mainnet --data-dir .data",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
-    "Mainnet (archive)": {
+    "Mekong": {
       "commandName": "Project",
-      "commandLineArgs": "-c mainnet_archive -dd %NETHERMIND_DATA_DIR%",
+      "commandLineArgs": "-c mekong --data-dir .data",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
-    "POA Core": {
+    "OP Mainnet": {
       "commandName": "Project",
-      "commandLineArgs": "-c poacore -dd %NETHERMIND_DATA_DIR% --JsonRpc.Enabled true",
+      "commandLineArgs": "-c op-mainnet --data-dir .data",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "OP Sepolia": {
+      "commandName": "Project",
+      "commandLineArgs": "-c op-sepolia --data-dir .data",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
     "Sepolia": {
       "commandName": "Project",
-      "commandLineArgs": "-c sepolia -dd %NETHERMIND_DATA_DIR%",
+      "commandLineArgs": "-c sepolia --data-dir .data",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
-    "Sepolia (archive)": {
+    "Taiko Hekla": {
       "commandName": "Project",
-      "commandLineArgs": "-c sepolia_archive -dd %NETHERMIND_DATA_DIR%",
+      "commandLineArgs": "-c taiko-hekla --data-dir .data",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
-    "Spaceneth": {
+    "Taiko Mainnet": {
       "commandName": "Project",
-      "commandLineArgs": "-c spaceneth -dd %NETHERMIND_DATA_DIR%",
+      "commandLineArgs": "-c taiko-mainnet --data-dir .data",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
     "Volta": {
       "commandName": "Project",
-      "commandLineArgs": "-c volta -dd %NETHERMIND_DATA_DIR% --JsonRpc.Enabled true",
+      "commandLineArgs": "-c volta --data-dir .data --jsonrpc-enabled true",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
     "Docker": {
       "commandName": "Docker",
-      "commandLineArgs": "-c sepolia -dd /data --JsonRpc.EngineHost 0.0.0.0 --JsonRpc.EnginePort 8551 --JsonRpc.Host 0.0.0.0"
+      "commandLineArgs": "-c holesky --data-dir /data --jsonrpc-enginehost 0.0.0.0 --jsonrpc-engineport 8551 --jsonrpc-host 0.0.0.0"
+    },
+    "WSL": {
+      "commandName": "WSL2",
+      "commandLineArgs": "\"{OutDir}/nethermind.dll\" -c holesky --data-dir .data",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "distributionName": ""
     }
   }
 }

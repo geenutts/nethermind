@@ -7,6 +7,7 @@ using Nethermind.Core;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
 using Nethermind.Core.Specs;
+using Nethermind.Core.Test.Builders;
 using Nethermind.Db;
 using Nethermind.Specs;
 using Nethermind.Int256;
@@ -16,14 +17,13 @@ using Nethermind.State;
 using Nethermind.Trie.Pruning;
 using NSubstitute;
 using NUnit.Framework;
-using Metrics = Nethermind.Trie.Pruning.Metrics;
 
 namespace Nethermind.Store.Test
 {
     [TestFixture, Parallelizable(ParallelScope.All)]
     public class StateReaderTests
     {
-        private static readonly Keccak Hash1 = Keccak.Compute("1");
+        private static readonly Hash256 Hash1 = Keccak.Compute("1");
         private readonly Address _address1 = new(Hash1);
         private static readonly ILogManager Logger = LimboLogs.Instance;
 
@@ -38,22 +38,22 @@ namespace Nethermind.Store.Test
             provider.AddToBalance(_address1, 1, spec);
             provider.Commit(spec);
             provider.CommitTree(0);
-            Keccak stateRoot0 = provider.StateRoot;
+            Hash256 stateRoot0 = provider.StateRoot;
 
             provider.AddToBalance(_address1, 1, spec);
             provider.Commit(spec);
             provider.CommitTree(0);
-            Keccak stateRoot1 = provider.StateRoot;
+            Hash256 stateRoot1 = provider.StateRoot;
 
             provider.AddToBalance(_address1, 1, spec);
             provider.Commit(spec);
             provider.CommitTree(0);
-            Keccak stateRoot2 = provider.StateRoot;
+            Hash256 stateRoot2 = provider.StateRoot;
 
             provider.AddToBalance(_address1, 1, spec);
             provider.Commit(spec);
             provider.CommitTree(0);
-            Keccak stateRoot3 = provider.StateRoot;
+            Hash256 stateRoot3 = provider.StateRoot;
 
             provider.CommitTree(0);
 
@@ -99,22 +99,22 @@ namespace Nethermind.Store.Test
             AddOneToBalance();
             UpdateStorageValue(new byte[] { 1 });
             CommitEverything();
-            Keccak stateRoot0 = provider.StateRoot;
+            Hash256 stateRoot0 = provider.StateRoot;
 
             AddOneToBalance();
             UpdateStorageValue(new byte[] { 2 });
             CommitEverything();
-            Keccak stateRoot1 = provider.StateRoot;
+            Hash256 stateRoot1 = provider.StateRoot;
 
             AddOneToBalance();
             UpdateStorageValue(new byte[] { 3 });
             CommitEverything();
-            Keccak stateRoot2 = provider.StateRoot;
+            Hash256 stateRoot2 = provider.StateRoot;
 
             AddOneToBalance();
             UpdateStorageValue(new byte[] { 4 });
             CommitEverything();
-            Keccak stateRoot3 = provider.StateRoot;
+            Hash256 stateRoot3 = provider.StateRoot;
 
             StateReader reader =
                 new(new TrieStore(stateDb, LimboLogs.Instance), Substitute.For<IDb>(), Logger);
@@ -146,16 +146,14 @@ namespace Nethermind.Store.Test
             provider.CreateAccount(_address1, 1);
             provider.Set(storageCell, new byte[] { 1 });
             CommitEverything();
-            Keccak stateRoot0 = provider.StateRoot;
+            Hash256 stateRoot0 = provider.StateRoot;
 
             StateReader reader =
                 new(new TrieStore(stateDb, LimboLogs.Instance), Substitute.For<IDb>(), Logger);
-            Keccak storageRoot = reader.GetStorageRoot(stateRoot0, _address1);
-            reader.GetStorage(storageRoot, storageCell.Index + 1).Should().BeEquivalentTo(new byte[] { 0 });
-            reader.GetStorage(Keccak.EmptyTreeHash, storageCell.Index + 1).Should().BeEquivalentTo(new byte[] { 0 });
+            reader.GetStorage(stateRoot0, _address1, storageCell.Index + 1).ToArray().Should().BeEquivalentTo(new byte[] { 0 });
         }
 
-        private Task StartTask(StateReader reader, Keccak stateRoot, UInt256 value)
+        private Task StartTask(StateReader reader, Hash256 stateRoot, UInt256 value)
         {
             return Task.Run(
                 () =>
@@ -168,15 +166,14 @@ namespace Nethermind.Store.Test
                 });
         }
 
-        private Task StartStorageTask(StateReader reader, Keccak stateRoot, StorageCell storageCell, byte[] value)
+        private Task StartStorageTask(StateReader reader, Hash256 stateRoot, StorageCell storageCell, byte[] value)
         {
             return Task.Run(
                 () =>
                 {
                     for (int i = 0; i < 1000; i++)
                     {
-                        Keccak storageRoot = reader.GetStorageRoot(stateRoot, storageCell.Address);
-                        byte[] result = reader.GetStorage(storageRoot, storageCell.Index);
+                        byte[] result = reader.GetStorage(stateRoot, storageCell.Address, storageCell.Index).ToArray();
                         result.Should().BeEquivalentTo(value);
                     }
                 });
@@ -208,8 +205,7 @@ namespace Nethermind.Store.Test
             StateReader reader = new(
                 new TrieStore(dbProvider.StateDb, LimboLogs.Instance), dbProvider.CodeDb, Logger);
 
-            var account = reader.GetAccount(state.StateRoot, _address1);
-            var retrieved = reader.GetStorage(account.StorageRoot, storageCell.Index);
+            var retrieved = reader.GetStorage(state.StateRoot, _address1, storageCell.Index).ToArray();
             retrieved.Should().BeEquivalentTo(initialValue);
 
             /* at this stage we set the value in storage to 1,2,3 at the tested storage cell */
@@ -231,11 +227,134 @@ namespace Nethermind.Store.Test
             /* At this stage the DB should have the storage value updated to 5.
                We will try to retrieve the value by taking the state root from the processor.*/
 
-            retrieved =
-                reader.GetStorage(processorStateProvider.GetStorageRoot(storageCell.Address), storageCell.Index);
+            retrieved = reader.GetStorage(processorStateProvider.StateRoot, storageCell.Address, storageCell.Index).ToArray();
             retrieved.Should().BeEquivalentTo(newValue);
 
             /* If it failed then it means that the blockchain bridge cached the previous call value */
+        }
+
+
+        [Test]
+        public void Can_collect_stats()
+        {
+            TrieStore trieStore = new TrieStore(new MemDb(), Logger);
+            WorldState provider = new(trieStore, new MemDb(), Logger);
+            provider.CreateAccount(TestItem.AddressA, 1.Ether());
+            provider.Commit(MuirGlacier.Instance);
+            provider.CommitTree(0);
+
+            StateReader stateReader = new StateReader(trieStore.AsReadOnly(), new MemDb(), Logger);
+            var stats = stateReader.CollectStats(provider.StateRoot, new MemDb(), Logger);
+            stats.AccountCount.Should().Be(1);
+        }
+
+        [Test]
+        public void IsInvalidContractSender_AccountHasCode_ReturnsTrue()
+        {
+            IReleaseSpec releaseSpec = Substitute.For<IReleaseSpec>();
+            releaseSpec.IsEip3607Enabled.Returns(true);
+            releaseSpec.IsEip7702Enabled.Returns(true);
+            TrieStore trieStore = new TrieStore(new MemDb(), Logger);
+            WorldState sut = new(trieStore, new MemDb(), Logger);
+            sut.CreateAccount(TestItem.AddressA, 0);
+            sut.InsertCode(TestItem.AddressA, ValueKeccak.Compute(new byte[1]), new byte[1], releaseSpec, false);
+            sut.Commit(MuirGlacier.Instance);
+            sut.CommitTree(0);
+
+            bool result = sut.IsInvalidContractSender(releaseSpec, TestItem.AddressA);
+
+            Assert.That(result, Is.True);
+        }
+
+        [Test]
+        public void IsInvalidContractSender_AccountHasNoCode_ReturnsFalse()
+        {
+            IReleaseSpec releaseSpec = Substitute.For<IReleaseSpec>();
+            releaseSpec.IsEip3607Enabled.Returns(true);
+            releaseSpec.IsEip7702Enabled.Returns(true);
+            TrieStore trieStore = new TrieStore(new MemDb(), Logger);
+            WorldState sut = new(trieStore, new MemDb(), Logger);
+            sut.CreateAccount(TestItem.AddressA, 0);
+            sut.Commit(MuirGlacier.Instance);
+            sut.CommitTree(0);
+
+            bool result = sut.IsInvalidContractSender(releaseSpec, TestItem.AddressA);
+
+            Assert.That(result, Is.False);
+        }
+
+        [Test]
+        public void IsInvalidContractSender_AccountHasDelegatedCode_ReturnsFalse()
+        {
+            IReleaseSpec releaseSpec = Substitute.For<IReleaseSpec>();
+            releaseSpec.IsEip3607Enabled.Returns(true);
+            releaseSpec.IsEip7702Enabled.Returns(true);
+            TrieStore trieStore = new TrieStore(new MemDb(), Logger);
+            WorldState sut = new(trieStore, new MemDb(), Logger);
+            sut.CreateAccount(TestItem.AddressA, 0);
+            byte[] code = [.. Eip7702Constants.DelegationHeader, .. new byte[20]];
+            sut.InsertCode(TestItem.AddressA, ValueKeccak.Compute(code), code, releaseSpec, false);
+            sut.Commit(MuirGlacier.Instance);
+            sut.CommitTree(0);
+
+            bool result = sut.IsInvalidContractSender(releaseSpec, TestItem.AddressA);
+
+            Assert.That(result, Is.False);
+        }
+
+        [Test]
+        public void IsInvalidContractSender_AccountHasCodeButDelegateReturnsTrue_ReturnsFalse()
+        {
+            IReleaseSpec releaseSpec = Substitute.For<IReleaseSpec>();
+            releaseSpec.IsEip3607Enabled.Returns(true);
+            releaseSpec.IsEip7702Enabled.Returns(true);
+            TrieStore trieStore = new TrieStore(new MemDb(), Logger);
+            WorldState sut = new(trieStore, new MemDb(), Logger);
+            sut.CreateAccount(TestItem.AddressA, 0);
+            byte[] code = new byte[20];
+            sut.InsertCode(TestItem.AddressA, ValueKeccak.Compute(code), code, releaseSpec, false);
+            sut.Commit(MuirGlacier.Instance);
+            sut.CommitTree(0);
+
+            bool result = sut.IsInvalidContractSender(releaseSpec, TestItem.AddressA, static (_) => true);
+
+            Assert.That(result, Is.False);
+        }
+
+        [Test]
+        public void IsInvalidContractSender_AccountHasDelegatedCodeBut7702IsNotEnabled_ReturnsTrue()
+        {
+            IReleaseSpec releaseSpec = Substitute.For<IReleaseSpec>();
+            releaseSpec.IsEip3607Enabled.Returns(true);
+            TrieStore trieStore = new TrieStore(new MemDb(), Logger);
+            WorldState sut = new(trieStore, new MemDb(), Logger);
+            sut.CreateAccount(TestItem.AddressA, 0);
+            byte[] code = [.. Eip7702Constants.DelegationHeader, .. new byte[20]];
+            sut.InsertCode(TestItem.AddressA, ValueKeccak.Compute(code), code, releaseSpec, false);
+            sut.Commit(MuirGlacier.Instance);
+            sut.CommitTree(0);
+
+            bool result = sut.IsInvalidContractSender(releaseSpec, TestItem.AddressA);
+
+            Assert.That(result, Is.True);
+        }
+
+        [Test]
+        public void IsInvalidContractSender_AccountHasDelegatedCodeBut3807IsNotEnabled_ReturnsFalse()
+        {
+            IReleaseSpec releaseSpec = Substitute.For<IReleaseSpec>();
+            releaseSpec.IsEip7702Enabled.Returns(true);
+            TrieStore trieStore = new TrieStore(new MemDb(), Logger);
+            WorldState sut = new(trieStore, new MemDb(), Logger);
+            sut.CreateAccount(TestItem.AddressA, 0);
+            byte[] code = [.. Eip7702Constants.DelegationHeader, .. new byte[20]];
+            sut.InsertCode(TestItem.AddressA, ValueKeccak.Compute(code), code, releaseSpec, false);
+            sut.Commit(MuirGlacier.Instance);
+            sut.CommitTree(0);
+
+            bool result = sut.IsInvalidContractSender(releaseSpec, TestItem.AddressA);
+
+            Assert.That(result, Is.False);
         }
     }
 }

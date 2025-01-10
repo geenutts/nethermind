@@ -3,6 +3,7 @@
 
 using System;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using FluentAssertions;
 using Nethermind.Int256;
 using Nethermind.Serialization.Rlp;
@@ -25,7 +26,7 @@ namespace Nethermind.Core.Test
         [Test]
         public void Serializing_empty_sequence()
         {
-            Rlp output = Rlp.Encode(new Rlp[] { });
+            Rlp output = Rlp.Encode(Array.Empty<Rlp>());
             Assert.That(output.Bytes, Is.EqualTo(new byte[] { 192 }));
         }
 
@@ -40,7 +41,7 @@ namespace Nethermind.Core.Test
         [Explicit("That was a regression test but now it is failing again and cannot find the reason we needed this behaviour in the first place. Sync works all fine. Leaving it here as it may resurface - make sure to add more explanation to it in such case.")]
         public void Serializing_object_int_regression()
         {
-            Rlp output = Rlp.Encode(new Rlp[] { Rlp.Encode(1) });
+            Rlp output = Rlp.Encode(new[] { Rlp.Encode(1) });
             Assert.That(output.Bytes, Is.EqualTo(new byte[] { 1 }));
         }
 
@@ -60,10 +61,35 @@ namespace Nethermind.Core.Test
         }
 
         [Test]
+        public void single_byte_encoding_decoding()
+        {
+            byte item = 0;
+            for (int i = 0; i < 128; i++)
+            {
+                Assert.That(Rlp.LengthOf(item), Is.EqualTo(1));
+                var data = Rlp.Encode(item);
+                var rlp = new RlpStream(data.Bytes);
+                Assert.That(rlp.DecodeByte(), Is.EqualTo(item));
+
+                item += 1;
+            }
+
+            for (int i = 128; i < 256; i++)
+            {
+                Assert.That(Rlp.LengthOf(item), Is.EqualTo(2));
+                var data = Rlp.Encode(item);
+                var rlp = new RlpStream(data.Bytes);
+                Assert.That(rlp.DecodeByte(), Is.EqualTo(item));
+
+                item += 1;
+            }
+        }
+
+        [Test]
         public void Long_negative()
         {
             Rlp output = Rlp.Encode(-1L);
-            var context = new RlpStream(output.Bytes);
+            RlpStream context = new RlpStream(output.Bytes);
             long value = context.DecodeLong();
 
             Assert.That(value, Is.EqualTo(-1L));
@@ -72,7 +98,7 @@ namespace Nethermind.Core.Test
         [Test]
         public void Empty_byte_array()
         {
-            byte[] bytes = new byte[0];
+            byte[] bytes = [];
             Rlp rlp = Rlp.Encode(bytes);
             Rlp rlpSpan = Rlp.Encode(bytes.AsSpan());
             Rlp expectedResult = new(new byte[] { 128 });
@@ -218,6 +244,33 @@ namespace Nethermind.Core.Test
             }
 
             Assert.That(rlpBigInt.Bytes, Is.EqualTo(rlpLong.Bytes));
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public void RlpContextWithSliceMemory_shouldNotCopyUnderlyingData(bool sliceValue)
+        {
+            byte[] randomBytes = new byte[100];
+            Random.Shared.NextBytes(randomBytes);
+
+            int requiredLength = Rlp.LengthOf(randomBytes) * 3;
+            RlpStream stream = new RlpStream(requiredLength);
+            stream.Encode(randomBytes);
+            stream.Encode(randomBytes);
+            stream.Encode(randomBytes);
+
+            Memory<byte> memory = stream.Data.ToArray();
+            Rlp.ValueDecoderContext context = new Rlp.ValueDecoderContext(memory, sliceValue);
+
+            for (int i = 0; i < 3; i++)
+            {
+                Memory<byte>? slice = context.DecodeByteArrayMemory();
+                slice.Should().NotBeNull();
+                MemoryMarshal.TryGetArray(slice!.Value, out ArraySegment<byte> segment);
+
+                bool isACopy = (segment.Offset == 0 && segment.Count == slice.Value.Length);
+                isACopy.Should().NotBe(sliceValue);
+            }
         }
     }
 }

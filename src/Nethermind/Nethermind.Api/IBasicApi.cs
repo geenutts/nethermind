@@ -4,10 +4,12 @@
 using System.Collections.Generic;
 using System.IO.Abstractions;
 using System.Linq;
+using Autofac;
 using Nethermind.Abi;
 using Nethermind.Api.Extensions;
+using Nethermind.Blockchain.Receipts;
+using Nethermind.Blockchain.Synchronization;
 using Nethermind.Config;
-using Nethermind.Consensus;
 using Nethermind.Core;
 using Nethermind.Core.Specs;
 using Nethermind.Core.Timers;
@@ -18,7 +20,6 @@ using Nethermind.Logging;
 using Nethermind.Serialization.Json;
 using Nethermind.Specs.ChainSpecStyle;
 using Nethermind.Synchronization;
-using Nethermind.Synchronization.ParallelSync;
 
 namespace Nethermind.Api
 {
@@ -31,8 +32,7 @@ namespace Nethermind.Api
         IConfigProvider ConfigProvider { get; set; }
         ICryptoRandom CryptoRandom { get; }
         IDbProvider? DbProvider { get; set; }
-        IRocksDbFactory? RocksDbFactory { get; set; }
-        IMemDbFactory? MemDbFactory { get; set; }
+        IDbFactory? DbFactory { get; set; }
         IEthereumEcdsa? EthereumEcdsa { get; set; }
         IJsonSerializer EthereumJsonSerializer { get; set; }
         IFileSystem FileSystem { get; set; }
@@ -40,10 +40,9 @@ namespace Nethermind.Api
         ILogManager LogManager { get; set; }
         ProtectedPrivateKey? OriginalSignerKey { get; set; }
         IReadOnlyList<INethermindPlugin> Plugins { get; }
+        [SkipServiceCollection]
         string SealEngineType { get; set; }
         ISpecProvider? SpecProvider { get; set; }
-        ISyncModeSelector? SyncModeSelector { get; set; }
-        ISyncProgressResolver? SyncProgressResolver { get; set; }
         IBetterPeerStrategy? BetterPeerStrategy { get; set; }
         ITimestamper Timestamper { get; }
         ITimerFactory TimerFactory { get; }
@@ -55,9 +54,20 @@ namespace Nethermind.Api
                 .SingleOrDefault(cp => cp.SealEngineType == SealEngineType);
 
         public IEnumerable<IConsensusWrapperPlugin> GetConsensusWrapperPlugins() =>
-            Plugins.OfType<IConsensusWrapperPlugin>().Where(p => p.Enabled);
+            Plugins.OfType<IConsensusWrapperPlugin>().Where(static p => p.Enabled);
 
         public IEnumerable<ISynchronizationPlugin> GetSynchronizationPlugins() =>
             Plugins.OfType<ISynchronizationPlugin>();
+
+        public ContainerBuilder ConfigureContainerBuilderFromBasicApi(ContainerBuilder builder)
+        {
+            builder
+                .AddPropertiesFrom<IBasicApi>(this)
+                .AddSingleton(ConfigProvider.GetConfig<ISyncConfig>())
+                .AddSingleton(ConfigProvider.GetConfig<IReceiptConfig>())
+                .AddModule(new DbModule());
+
+            return builder;
+        }
     }
 }

@@ -1,22 +1,17 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net7.0</TargetFramework>
     <TargetLatestRuntimePatch>true</TargetLatestRuntimePatch>
     <OutputType>Exe</OutputType>
-    <PackageId>Nethermind CLI</PackageId>
-    <Authors>Nethermind</Authors>
-    <PackageVersion>1.0.0</PackageVersion>
-    <LangVersion>latest</LangVersion>
+    <AssemblyName>nethermind-cli</AssemblyName>
     <Nullable>enable</Nullable>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Colorful.Console" />
-    <PackageReference Include="Jint"/>
-    <PackageReference Include="Microsoft.Extensions.CommandLineUtils" />
+    <PackageReference Include="Jint" />
     <PackageReference Include="ReadLine" />
+    <PackageReference Include="System.CommandLine" />
   </ItemGroup>
 
   <ItemGroup>

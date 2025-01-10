@@ -16,9 +16,9 @@ namespace Nethermind.JsonRpc.Test.Modules
     [TestFixture]
     public class RpcModuleProviderTests
     {
-        private RpcModuleProvider _moduleProvider;
-        private IFileSystem _fileSystem;
-        private JsonRpcContext _context;
+        private IRpcModuleProvider _moduleProvider = null!;
+        private IFileSystem _fileSystem = null!;
+        private JsonRpcContext _context = null!;
 
         [SetUp]
         public void Initialize()
@@ -28,11 +28,17 @@ namespace Nethermind.JsonRpc.Test.Modules
             _context = new JsonRpcContext(RpcEndpoint.Http);
         }
 
+        [TearDown]
+        public void TearDown()
+        {
+            _context?.Dispose();
+        }
+
         [Test]
         public void Module_provider_will_recognize_disabled_modules()
         {
             JsonRpcConfig jsonRpcConfig = new();
-            jsonRpcConfig.EnabledModules = new string[0];
+            jsonRpcConfig.EnabledModules = [];
             _moduleProvider = new RpcModuleProvider(new FileSystem(), jsonRpcConfig, LimboLogs.Instance);
             _moduleProvider.Register(new SingletonModulePool<IProofRpcModule>(Substitute.For<IProofRpcModule>(), false));
             ModuleResolution resolution = _moduleProvider.Check("proof_call", _context);

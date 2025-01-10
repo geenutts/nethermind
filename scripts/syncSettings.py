@@ -24,17 +24,7 @@ configs = {
         "blockReduced": 1000,
         "multiplierRequirement": 1000
     },
-    "goerli": {
-        "url": "api-goerli.etherscan.io",
-        "blockReduced": 8192,
-        "multiplierRequirement": 30000
-    },
     "gnosis": {
-        "url": "https://rpc.gnosischain.com",
-        "blockReduced": 8192,
-        "multiplierRequirement": 10000
-    },
-    "xdai": {
         "url": "https://rpc.gnosischain.com",
         "blockReduced": 8192,
         "multiplierRequirement": 10000
@@ -63,6 +53,46 @@ configs = {
         "url": "https://rpc.exosama.com",
         "blockReduced": 8192,
         "multiplierRequirement": 10000
+    },
+    "joc-mainnet": {
+        "url": "https://rpc-1.japanopenchain.org:8545",
+        "blockReduced": 8192,
+        "multiplierRequirement": 10000
+    },
+    "joc-testnet": {
+        "url": "https://rpc-1.testnet.japanopenchain.org:8545",
+        "blockReduced": 8192,
+        "multiplierRequirement": 10000
+    },
+    "base-mainnet": {
+        "url": "https://mainnet.base.org",
+        "blockReduced": 8192,
+        "multiplierRequirement": 10000
+    },
+    "base-sepolia": {
+        "url": "https://sepolia.base.org",
+        "blockReduced": 8192,
+        "multiplierRequirement": 10000
+    },
+    "op-mainnet": {
+        "url": "https://mainnet.optimism.io",
+        "blockReduced": 8192,
+        "multiplierRequirement": 10000
+    },
+    "op-sepolia": {
+        "url": "https://sepolia.optimism.io",
+        "blockReduced": 8192,
+        "multiplierRequirement": 10000
+    },
+    "linea-mainnet": {
+        "url": "https://rpc.linea.build",
+        "blockReduced": 8192,
+        "multiplierRequirement": 10000
+    },
+    "linea-sepolia": {
+        "url": "https://rpc.sepolia.linea.build",
+        "blockReduced": 8192,
+        "multiplierRequirement": 10000
     }
 }
 
@@ -85,18 +115,18 @@ def fastBlocksSettings(configuration, apiUrl, blockReduced, multiplierRequiremen
         pivot = json.loads(requests.post(apiUrl, headers=headers, data=data).text)
 
     pivotHash = pivot['result']['hash']
-    pivotTotalDifficulty = int(pivot['result']['totalDifficulty'],16)
+    pivotTotalDifficulty = int(pivot['result'].get('totalDifficulty', '0x0'), 16)
     print(configuration + 'LatestBlock: ' + str(latestBlock))
     print(configuration + 'PivotNumber: ' + str(baseBlock))
     print(configuration + 'PivotHash: ' + str(pivotHash))
     print(configuration + 'PivotTotalDifficulty: ' + str(pivotTotalDifficulty))
     data = {}
-    with open(f'{configsPath}/{configuration}.cfg', 'r') as mainnetCfg:
+    with open(f'{configsPath}/{configuration}.json', 'r') as mainnetCfg:
         data = json.load(mainnetCfg)
         data['Sync']['PivotNumber'] = baseBlock
         data['Sync']['PivotHash'] = pivotHash
         data['Sync']['PivotTotalDifficulty'] = str(pivotTotalDifficulty)
-        with open(f'{configsPath}/{configuration}.cfg', 'w') as mainnetCfgChanged:
+        with open(f'{configsPath}/{configuration}.json', 'w') as mainnetCfgChanged:
             json.dump(data, mainnetCfgChanged, indent=2)
 
 for config, value in configs.items():

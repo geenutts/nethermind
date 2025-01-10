@@ -6,19 +6,20 @@ using System.Threading.Tasks;
 using FluentAssertions;
 using Nethermind.Abi;
 using Nethermind.AuRa.Test.Contract;
+using Nethermind.Blockchain;
+using Nethermind.Blockchain.BeaconBlockRoot;
 using Nethermind.Consensus.AuRa;
 using Nethermind.Consensus.AuRa.Contracts;
 using Nethermind.Consensus.AuRa.Transactions;
-using Nethermind.Consensus.AuRa.Withdrawals;
 using Nethermind.Consensus.Processing;
 using Nethermind.Consensus.Rewards;
 using Nethermind.Consensus.Transactions;
 using Nethermind.Consensus.Validators;
+using Nethermind.Consensus.Withdrawals;
 using Nethermind.Core;
 using Nethermind.Core.Specs;
 using Nethermind.Core.Test.Builders;
 using Nethermind.Logging;
-using Nethermind.Trie.Pruning;
 using Nethermind.TxPool;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
@@ -44,7 +45,7 @@ public class TxCertifierFilterTests
             .Returns(AcceptTxResult.Invalid);
 
         _certifierContract.Certified(Arg.Any<BlockHeader>(),
-            Arg.Is<Address>(a => TestItem.Addresses.Take(3).Contains(a)))
+            Arg.Is<Address>(static a => TestItem.Addresses.Take(3).Contains(a)))
             .Returns(true);
 
         _filter = new TxCertifierFilter(_certifierContract, _notCertifiedFilter, _specProvider, LimboLogs.Instance);
@@ -137,9 +138,8 @@ public class TxCertifierFilterTests
         {
             AbiEncoder abiEncoder = AbiEncoder.Instance;
             ReadOnlyTransactionProcessorSource = new ReadOnlyTxProcessingEnv(
-                DbProvider,
-                new TrieStore(DbProvider.StateDb, LimboLogs.Instance).AsReadOnly(),
-            BlockTree, SpecProvider,
+                WorldStateManager,
+                BlockTree.AsReadOnly(), SpecProvider,
                 LimboLogs.Instance);
             RegisterContract = new RegisterContract(abiEncoder, ChainSpec.Parameters.Registrar, ReadOnlyTransactionProcessorSource);
             CertifierContract = new CertifierContract(
@@ -154,9 +154,13 @@ public class TxCertifierFilterTests
                 new BlockProcessor.BlockValidationTransactionsExecutor(TxProcessor, State),
                 State,
                 ReceiptStorage,
+                new BeaconBlockRootHandler(TxProcessor, State),
                 LimboLogs.Instance,
                 BlockTree,
-                NullWithdrawalProcessor.Instance);
+                NullWithdrawalProcessor.Instance,
+                TxProcessor,
+                auRaValidator: null,
+                preWarmer: CreateBlockCachePreWarmer());
         }
 
         protected override Task AddBlocksOnStart() => Task.CompletedTask;

@@ -7,87 +7,95 @@ using System.Linq;
 using FluentAssertions;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Test.Builders;
-using Nethermind.Network.P2P.Subprotocols.Eth.V65;
+using Nethermind.Network.P2P.Subprotocols.Eth;
 using Nethermind.Network.P2P.Subprotocols.Eth.V65.Messages;
 using Nethermind.TxPool;
 using NSubstitute;
 using NUnit.Framework;
+using System.Runtime.InteropServices;
+using Nethermind.Core.Collections;
+using Nethermind.Core.Extensions;
 
 namespace Nethermind.Network.Test.P2P.Subprotocols.Eth.V65
 {
     public class PooledTxsRequestorTests
     {
         private readonly ITxPool _txPool = Substitute.For<ITxPool>();
-        private readonly Action<GetPooledTransactionsMessage> _doNothing = Substitute.For<Action<GetPooledTransactionsMessage>>();
+        private readonly Action<GetPooledTransactionsMessage> _doNothing = static msg => msg.Dispose();
         private IPooledTxsRequestor _requestor;
-        private IReadOnlyList<Keccak> _request;
-        private IList<Keccak> _expected;
-        private IReadOnlyList<Keccak> _response;
+        private ArrayPoolList<Hash256> _response;
 
+        [TearDown]
+        public void TearDown()
+        {
+            _response?.Dispose();
+        }
 
         [Test]
         public void filter_properly_newPooledTxHashes()
         {
-            _response = new List<Keccak>();
-            _requestor = new PooledTxsRequestor(_txPool);
-            _requestor.RequestTransactions(_doNothing, new List<Keccak> { TestItem.KeccakA, TestItem.KeccakD });
+            _requestor = new PooledTxsRequestor(_txPool, new TxPoolConfig());
+            using var skipped = new ArrayPoolList<Hash256>(2) { TestItem.KeccakA, TestItem.KeccakD };
+            _requestor.RequestTransactions(_doNothing, skipped);
 
-            _request = new List<Keccak> { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC };
-            _expected = new List<Keccak> { TestItem.KeccakB, TestItem.KeccakC };
-            _requestor.RequestTransactions(Send, _request);
-            _response.Should().BeEquivalentTo(_expected);
+            using var request = new ArrayPoolList<Hash256>(3) { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC };
+            using var expected = new ArrayPoolList<Hash256>(3) { TestItem.KeccakB, TestItem.KeccakC };
+            _requestor.RequestTransactions(Send, request);
+            _response.Should().BeEquivalentTo(expected);
         }
 
         [Test]
         public void filter_properly_already_pending_hashes()
         {
-            _response = new List<Keccak>();
-            _requestor = new PooledTxsRequestor(_txPool);
-            _requestor.RequestTransactions(_doNothing, new List<Keccak> { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC });
+            _requestor = new PooledTxsRequestor(_txPool, new TxPoolConfig());
+            using var skipped = new ArrayPoolList<Hash256>(3) { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC };
+            _requestor.RequestTransactions(_doNothing, skipped);
 
-            _request = new List<Keccak> { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC };
-            _requestor.RequestTransactions(Send, _request);
+            using var request = new ArrayPoolList<Hash256>(3) { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC };
+            _requestor.RequestTransactions(Send, request);
             _response.Should().BeEmpty();
         }
 
         [Test]
         public void filter_properly_discovered_hashes()
         {
-            _response = new List<Keccak>();
-            _requestor = new PooledTxsRequestor(_txPool);
+            _requestor = new PooledTxsRequestor(_txPool, new TxPoolConfig());
 
-            _request = new List<Keccak> { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC };
-            _expected = new List<Keccak> { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC };
-            _requestor.RequestTransactions(Send, _request);
-            _response.Should().BeEquivalentTo(_expected);
+            using var request = new ArrayPoolList<Hash256>(3) { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC };
+            using var expected = new ArrayPoolList<Hash256>(3) { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC };
+            _requestor.RequestTransactions(Send, request);
+            _response.Should().BeEquivalentTo(expected);
         }
 
         [Test]
         public void can_handle_empty_argument()
         {
-            _response = new List<Keccak>();
-            _requestor = new PooledTxsRequestor(_txPool);
-            _requestor.RequestTransactions(Send, new List<Keccak>());
+            _requestor = new PooledTxsRequestor(_txPool, new TxPoolConfig());
+            using var skipped = new ArrayPoolList<Hash256>(0);
+            _requestor.RequestTransactions(Send, skipped);
             _response.Should().BeEmpty();
         }
 
         [Test]
         public void filter_properly_hashes_present_in_hashCache()
         {
-            _response = new List<Keccak>();
             ITxPool txPool = Substitute.For<ITxPool>();
-            txPool.IsKnown(Arg.Any<Keccak>()).Returns(true);
-            _requestor = new PooledTxsRequestor(txPool);
+            txPool.IsKnown(Arg.Any<Hash256>()).Returns(true);
+            _requestor = new PooledTxsRequestor(txPool, new TxPoolConfig());
 
-            _request = new List<Keccak> { TestItem.KeccakA, TestItem.KeccakB };
-            _expected = new List<Keccak> { };
-            _requestor.RequestTransactions(Send, _request);
-            _response.Should().BeEquivalentTo(_expected);
+            using var request = new ArrayPoolList<Hash256>(2) { TestItem.KeccakA, TestItem.KeccakB };
+            using var expected = new ArrayPoolList<Hash256>(0) { };
+            _requestor.RequestTransactions(Send, request);
+            _response.Should().BeEquivalentTo(expected);
         }
 
         private void Send(GetPooledTransactionsMessage msg)
         {
-            _response = msg.Hashes.ToList();
+            _response?.Dispose();
+            using (msg)
+            {
+                _response = msg.Hashes.ToPooledList();
+            }
         }
     }
 }

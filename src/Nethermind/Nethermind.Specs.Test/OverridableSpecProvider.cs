@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
-using Nethermind.Core;
 using Nethermind.Core.Specs;
 using Nethermind.Int256;
 
@@ -36,9 +35,10 @@ namespace Nethermind.Specs.Test
         public IReleaseSpec GetSpec(ForkActivation forkActivation) => _overrideAction(_specProvider.GetSpec(forkActivation));
 
         public long? DaoBlockNumber => _specProvider.DaoBlockNumber;
-
+        public ulong? BeaconChainGenesisTimestamp => _specProvider.BeaconChainGenesisTimestamp;
         public ulong NetworkId => _specProvider.NetworkId;
         public ulong ChainId => _specProvider.ChainId;
+        public string SealEngine => _specProvider.SealEngine;
 
         public ForkActivation[] TransitionActivations => _specProvider.TransitionActivations;
     }

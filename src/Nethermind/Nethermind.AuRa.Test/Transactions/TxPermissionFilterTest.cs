@@ -8,13 +8,15 @@ using System.Threading.Tasks;
 using FluentAssertions;
 using Nethermind.Abi;
 using Nethermind.AuRa.Test.Contract;
+using Nethermind.Blockchain;
+using Nethermind.Blockchain.BeaconBlockRoot;
 using Nethermind.Consensus.AuRa;
 using Nethermind.Consensus.AuRa.Contracts;
 using Nethermind.Consensus.AuRa.Transactions;
-using Nethermind.Consensus.AuRa.Withdrawals;
 using Nethermind.Consensus.Processing;
 using Nethermind.Consensus.Rewards;
 using Nethermind.Consensus.Validators;
+using Nethermind.Consensus.Withdrawals;
 using Nethermind.Core;
 using Nethermind.Core.Caching;
 using Nethermind.Core.Crypto;
@@ -25,7 +27,6 @@ using Nethermind.Crypto;
 using Nethermind.Int256;
 using Nethermind.Evm.TransactionProcessing;
 using Nethermind.Logging;
-using Nethermind.Specs.ChainSpecStyle;
 using Nethermind.Trie.Pruning;
 using Nethermind.TxPool;
 using NSubstitute;
@@ -226,13 +227,13 @@ public class TxPermissionFilterTest
             foreach (ITransactionPermissionContract.TxPermissions txType in TxPermissionsTypes)
             {
                 Task<TestTxPermissionsBlockchain> chainTask = TestContractBlockchain.ForTest<TestTxPermissionsBlockchain, TxPermissionFilterTest>(testsName);
-                Func<Task<TestTxPermissionsBlockchain>> testFactory = async () =>
+                async Task<TestTxPermissionsBlockchain> testFactory()
                 {
                     TestTxPermissionsBlockchain chain = await chainTask;
                     chain.TxPermissionFilterCache.Permissions.Clear();
                     chain.TransactionPermissionContractVersions.Clear();
                     return chain;
-                };
+                }
 
                 yield return GetTestCase(testFactory, test, txType);
             }
@@ -248,7 +249,7 @@ public class TxPermissionFilterTest
         VersionedTransactionPermissionContract transactionPermissionContract = new(AbiEncoder.Instance,
             TestItem.AddressA,
             5,
-            Substitute.For<IReadOnlyTxProcessorSource>(), new LruCache<KeccakKey, UInt256>(100, "TestCache"),
+            Substitute.For<IReadOnlyTxProcessorSource>(), new LruCache<ValueHash256, UInt256>(100, "TestCache"),
             LimboLogs.Instance,
             Substitute.For<ISpecProvider>());
 
@@ -261,29 +262,22 @@ public class TxPermissionFilterTest
         public PermissionBasedTxFilter PermissionBasedTxFilter { get; private set; }
         public PermissionBasedTxFilter.Cache TxPermissionFilterCache { get; private set; }
 
-        public LruCache<KeccakKey, UInt256> TransactionPermissionContractVersions { get; private set; }
+        public LruCache<ValueHash256, UInt256> TransactionPermissionContractVersions { get; private set; }
 
         protected override BlockProcessor CreateBlockProcessor()
         {
-            AuRaParameters.Validator validator = new()
-            {
-                Addresses = TestItem.Addresses,
-                ValidatorType = AuRaParameters.ValidatorType.List
-            };
-
             TransactionPermissionContractVersions =
-                new LruCache<KeccakKey, UInt256>(PermissionBasedTxFilter.Cache.MaxCacheSize, nameof(TransactionPermissionContract));
+                new LruCache<ValueHash256, UInt256>(PermissionBasedTxFilter.Cache.MaxCacheSize, nameof(TransactionPermissionContract));
 
             IReadOnlyTrieStore trieStore = new TrieStore(DbProvider.StateDb, LimboLogs.Instance).AsReadOnly();
             IReadOnlyTxProcessorSource txProcessorSource = new ReadOnlyTxProcessingEnv(
-                DbProvider,
-                trieStore,
-                BlockTree,
+                WorldStateManager,
+                BlockTree.AsReadOnly(),
                 SpecProvider,
                 LimboLogs.Instance);
 
             VersionedTransactionPermissionContract transactionPermissionContract = new(AbiEncoder.Instance, _contractAddress, 1,
-                new ReadOnlyTxProcessingEnv(DbProvider, trieStore, BlockTree, SpecProvider, LimboLogs.Instance), TransactionPermissionContractVersions, LimboLogs.Instance, SpecProvider);
+                new ReadOnlyTxProcessingEnv(WorldStateManager, BlockTree.AsReadOnly(), SpecProvider, LimboLogs.Instance), TransactionPermissionContractVersions, LimboLogs.Instance, SpecProvider);
 
             TxPermissionFilterCache = new PermissionBasedTxFilter.Cache();
             PermissionBasedTxFilter = new PermissionBasedTxFilter(transactionPermissionContract, TxPermissionFilterCache, LimboLogs.Instance);
@@ -295,10 +289,14 @@ public class TxPermissionFilterTest
                 new BlockProcessor.BlockValidationTransactionsExecutor(TxProcessor, State),
                 State,
                 ReceiptStorage,
+                new BeaconBlockRootHandler(TxProcessor, State),
                 LimboLogs.Instance,
                 BlockTree,
                 NullWithdrawalProcessor.Instance,
-                PermissionBasedTxFilter);
+                TxProcessor,
+                null,
+                txFilter: PermissionBasedTxFilter,
+                preWarmer: CreateBlockCachePreWarmer());
         }
 
         protected override async Task AddBlocksOnStart()

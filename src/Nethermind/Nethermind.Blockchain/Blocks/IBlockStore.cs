@@ -3,6 +3,7 @@
 
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
+using Nethermind.Serialization.Rlp;
 
 namespace Nethermind.Blockchain.Blocks;
 
@@ -12,13 +13,11 @@ namespace Nethermind.Blockchain.Blocks;
 /// </summary>
 public interface IBlockStore
 {
-    void Insert(Block block);
-    void Delete(Keccak blockHash);
-    Block Get(Keccak blockHash, bool shouldCache = true);
+    void Insert(Block block, WriteFlags writeFlags = WriteFlags.None);
+    void Delete(long blockNumber, Hash256 blockHash);
+    Block? Get(long blockNumber, Hash256 blockHash, RlpBehaviors rlpBehaviors = RlpBehaviors.None, bool shouldCache = true);
+    byte[]? GetRlp(long blockNumber, Hash256 blockHash);
+    ReceiptRecoveryBlock? GetReceiptRecoveryBlock(long blockNumber, Hash256 blockHash);
     void Cache(Block block);
-
-
-    // These two are used by blocktree. Try not to use them...
-    void SetMetadata(byte[] key, byte[] value);
-    byte[]? GetMetadata(byte[] key);
+    bool HasBlock(long blockNumber, Hash256 blockHash);
 }

@@ -7,9 +7,9 @@ using Nethermind.Cli.Console;
 using Nethermind.Cli.Modules;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Test.Builders;
+using Nethermind.Facade.Eth.RpcTransaction;
 using Nethermind.JsonRpc;
 using Nethermind.JsonRpc.Client;
-using Nethermind.JsonRpc.Data;
 using Nethermind.Logging;
 using Nethermind.Serialization.Json;
 using NSubstitute;
@@ -19,7 +19,7 @@ namespace Nethermind.Cli.Test
 {
     public class ProofCliModuleTests
     {
-        private ICliConsole _cliConsole = Substitute.For<ICliConsole>();
+        private readonly ICliConsole _cliConsole = Substitute.For<ICliConsole>();
         private EthereumJsonSerializer _serializer;
         private IJsonRpcClient _jsonRpcClient;
         private CliEngine _engine;
@@ -42,7 +42,7 @@ namespace Nethermind.Cli.Test
         [TestCase(false)]
         public void Get_transaction_by_hash(bool includeHeader)
         {
-            Keccak txHash = TestItem.KeccakA;
+            Hash256 txHash = TestItem.KeccakA;
             JsonRpcSuccessResponse response = new()
             {
                 Id = "id1",
@@ -61,7 +61,7 @@ namespace Nethermind.Cli.Test
         [TestCase(false)]
         public void Get_transaction_receipt(bool includeHeader)
         {
-            Keccak txHash = TestItem.KeccakA;
+            Hash256 txHash = TestItem.KeccakA;
             JsonRpcSuccessResponse response = new()
             {
                 Id = "id1",
@@ -79,8 +79,8 @@ namespace Nethermind.Cli.Test
         [Test]
         public void Call()
         {
-            Keccak blockHash = TestItem.KeccakA;
-            TransactionForRpc tx = new()
+            Hash256 blockHash = TestItem.KeccakA;
+            LegacyTransactionForRpc tx = new()
             {
                 From = TestItem.AddressA,
                 To = TestItem.AddressB

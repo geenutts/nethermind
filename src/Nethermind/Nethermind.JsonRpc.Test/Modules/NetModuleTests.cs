@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System.Net;
-using Google.Protobuf.WellKnownTypes;
+using System.Threading.Tasks;
 using Nethermind.Blockchain;
 using Nethermind.Blockchain.Receipts;
 using Nethermind.Blockchain.Synchronization;
@@ -13,11 +13,8 @@ using Nethermind.Core;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Specs;
 using Nethermind.Core.Test.Builders;
-using Nethermind.Db;
 using Nethermind.JsonRpc.Modules.Net;
 using Nethermind.Logging;
-using Nethermind.Specs;
-using Nethermind.State;
 using Nethermind.Synchronization;
 using Nethermind.Synchronization.ParallelSync;
 using Nethermind.Synchronization.Peers;
@@ -31,17 +28,17 @@ namespace Nethermind.JsonRpc.Test.Modules
     public class NetModuleTests
     {
         [Test]
-        public void NetPeerCountSuccessTest()
+        public async Task NetPeerCountSuccessTest()
         {
             Enode enode = new(TestItem.PublicKeyA, IPAddress.Loopback, 30303);
             NetBridge netBridge = new(enode, Substitute.For<ISyncServer>());
             NetRpcModule rpcModule = new(LimboLogs.Instance, netBridge);
-            string response = RpcTest.TestSerializedRequest<INetRpcModule>(rpcModule, "net_peerCount");
+            string response = await RpcTest.TestSerializedRequest<INetRpcModule>(rpcModule, "net_peerCount");
             Assert.That(response, Is.EqualTo("{\"jsonrpc\":\"2.0\",\"result\":\"0x0\",\"id\":67}"));
         }
 
         [Test]
-        public void NetVersionSuccessTest()
+        public async Task NetVersionSuccessTest()
         {
             Enode enode = new(TestItem.PublicKeyA, IPAddress.Loopback, 30303);
             var blockTree = Substitute.For<IBlockTree>();
@@ -59,13 +56,12 @@ namespace Nethermind.JsonRpc.Test.Modules
                 Substitute.For<ISyncPeerPool>(),
                 Substitute.For<ISyncModeSelector>(),
                 syncConfig,
-                Substitute.For<IWitnessRepository>(),
                 Substitute.For<IGossipPolicy>(),
                 Substitute.For<ISpecProvider>(),
                 Substitute.For<ILogManager>());
             NetBridge netBridge = new(enode, syncServer);
             NetRpcModule rpcModule = new(LimboLogs.Instance, netBridge);
-            string response = RpcTest.TestSerializedRequest<INetRpcModule>(rpcModule, "net_version");
+            string response = await RpcTest.TestSerializedRequest<INetRpcModule>(rpcModule, "net_version");
             Assert.That(response, Is.EqualTo($"{{\"jsonrpc\":\"2.0\",\"result\":\"{TestBlockchainIds.NetworkId}\",\"id\":67}}"));
 
             _ = blockTree.DidNotReceive().ChainId;
@@ -73,12 +69,12 @@ namespace Nethermind.JsonRpc.Test.Modules
         }
 
         [Test]
-        public void NetListeningSuccessTest()
+        public async Task NetListeningSuccessTest()
         {
             Enode enode = new(TestItem.PublicKeyA, IPAddress.Loopback, 30303);
             NetBridge netBridge = new(enode, Substitute.For<ISyncServer>());
             NetRpcModule rpcModule = new(LimboLogs.Instance, netBridge);
-            string response = RpcTest.TestSerializedRequest<INetRpcModule>(rpcModule, "net_listening");
+            string response = await RpcTest.TestSerializedRequest<INetRpcModule>(rpcModule, "net_listening");
             Assert.That(response, Is.EqualTo("{\"jsonrpc\":\"2.0\",\"result\":true,\"id\":67}"));
         }
     }

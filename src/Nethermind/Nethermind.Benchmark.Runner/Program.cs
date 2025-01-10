@@ -10,6 +10,7 @@ using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Reports;
 using BenchmarkDotNet.Running;
 using System.Linq;
+using BenchmarkDotNet.Toolchains.InProcess.NoEmit;
 
 namespace Nethermind.Benchmark.Runner
 {
@@ -19,12 +20,13 @@ namespace Nethermind.Benchmark.Runner
         {
             foreach (Job job in jobs)
             {
-                AddJob(job);
+                AddJob(job.WithToolchain(InProcessNoEmitToolchain.Instance));
             }
 
             AddColumnProvider(BenchmarkDotNet.Columns.DefaultColumnProviders.Descriptor);
             AddColumnProvider(BenchmarkDotNet.Columns.DefaultColumnProviders.Statistics);
             AddColumnProvider(BenchmarkDotNet.Columns.DefaultColumnProviders.Params);
+            AddColumnProvider(BenchmarkDotNet.Columns.DefaultColumnProviders.Metrics);
             AddLogger(BenchmarkDotNet.Loggers.ConsoleLogger.Default);
             AddExporter(BenchmarkDotNet.Exporters.Json.JsonExporter.FullCompressed);
             AddDiagnoser(BenchmarkDotNet.Diagnosers.MemoryDiagnoser.Default);
@@ -58,7 +60,7 @@ namespace Nethermind.Benchmark.Runner
             {
                 foreach (Assembly assembly in additionalJobAssemblies)
                 {
-                    BenchmarkRunner.Run(assembly, new DashboardConfig(Job.MediumRun.WithRuntime(CoreRuntime.Core70)), args);
+                    BenchmarkRunner.Run(assembly, new DashboardConfig(Job.MediumRun.WithRuntime(CoreRuntime.Core90)), args);
                 }
 
                 foreach (Assembly assembly in simpleJobAssemblies)

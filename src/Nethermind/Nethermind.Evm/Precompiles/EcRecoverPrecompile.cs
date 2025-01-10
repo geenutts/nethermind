@@ -7,35 +7,28 @@ using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
 using Nethermind.Core.Specs;
 using Nethermind.Crypto;
-using Nethermind.Logging;
 
 namespace Nethermind.Evm.Precompiles
 {
-    public class EcRecoverPrecompile : IPrecompile
+    public class EcRecoverPrecompile : IPrecompile<EcRecoverPrecompile>
     {
-        public static readonly IPrecompile Instance = new EcRecoverPrecompile();
+        public static readonly EcRecoverPrecompile Instance = new EcRecoverPrecompile();
 
         private EcRecoverPrecompile()
         {
         }
 
-        public Address Address { get; } = Address.FromNumber(1);
+        public static Address Address { get; } = Address.FromNumber(1);
 
-        public long DataGasCost(in ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
-        {
-            return 0L;
-        }
+        public long DataGasCost(ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec) => 0L;
 
-        public long BaseGasCost(IReleaseSpec releaseSpec)
-        {
-            return 3000L;
-        }
+        public long BaseGasCost(IReleaseSpec releaseSpec) => 3000L;
 
-        private readonly EthereumEcdsa _ecdsa = new(BlockchainIds.Mainnet, LimboLogs.Instance);
+        private readonly EthereumEcdsa _ecdsa = new(BlockchainIds.Mainnet);
 
         private readonly byte[] _zero31 = new byte[31];
 
-        public (ReadOnlyMemory<byte>, bool) Run(in ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
+        public (ReadOnlyMemory<byte>, bool) Run(ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
         {
             Metrics.EcRecoverPrecompile++;
 
@@ -43,7 +36,7 @@ namespace Nethermind.Evm.Precompiles
             inputData.Span[..Math.Min(128, inputData.Length)]
                 .CopyTo(inputDataSpan[..Math.Min(128, inputData.Length)]);
 
-            Keccak hash = new(inputDataSpan[..32].ToArray());
+            Hash256 hash = new(inputDataSpan[..32]);
             Span<byte> vBytes = inputDataSpan.Slice(32, 32);
             Span<byte> r = inputDataSpan.Slice(64, 32);
             Span<byte> s = inputDataSpan.Slice(96, 32);

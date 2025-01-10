@@ -9,19 +9,19 @@ using Nethermind.Crypto.Blake2;
 
 namespace Nethermind.Evm.Precompiles
 {
-    public class Blake2FPrecompile : IPrecompile
+    public class Blake2FPrecompile : IPrecompile<Blake2FPrecompile>
     {
         private const int RequiredInputLength = 213;
 
-        private Blake2Compression _blake = new();
+        private readonly Blake2Compression _blake = new();
 
-        public static readonly IPrecompile Instance = new Blake2FPrecompile();
+        public static readonly Blake2FPrecompile Instance = new Blake2FPrecompile();
 
-        public Address Address { get; } = Address.FromNumber(9);
+        public static Address Address { get; } = Address.FromNumber(9);
 
         public long BaseGasCost(IReleaseSpec releaseSpec) => 0;
 
-        public long DataGasCost(in ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
+        public long DataGasCost(ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
         {
             if (inputData.Length != RequiredInputLength)
             {
@@ -39,17 +39,17 @@ namespace Nethermind.Evm.Precompiles
             return rounds;
         }
 
-        public (ReadOnlyMemory<byte>, bool) Run(in ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
+        public (ReadOnlyMemory<byte>, bool) Run(ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
         {
             if (inputData.Length != RequiredInputLength)
             {
-                return (Array.Empty<byte>(), false);
+                return IPrecompile.Failure;
             }
 
             byte finalByte = inputData.Span[212];
             if (finalByte != 0 && finalByte != 1)
             {
-                return (Array.Empty<byte>(), false);
+                return IPrecompile.Failure;
             }
 
             byte[] result = new byte[64];

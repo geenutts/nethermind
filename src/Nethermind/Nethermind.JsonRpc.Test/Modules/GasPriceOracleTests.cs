@@ -13,7 +13,6 @@ using Nethermind.Core.Test.Builders;
 using Nethermind.Int256;
 using Nethermind.JsonRpc.Modules.Eth.GasPrice;
 using Nethermind.Logging;
-using Nethermind.Specs;
 using Nethermind.Specs.Forks;
 using Nethermind.Specs.Test;
 using NSubstitute;
@@ -260,7 +259,7 @@ namespace Nethermind.JsonRpc.Test.Modules
 
             IEnumerable<UInt256> results = gasPriceOracle.GetSortedGasPricesFromRecentBlocks(0);
 
-            List<UInt256> expectedList = expected.Select(n => (UInt256)n).ToList();
+            List<UInt256> expectedList = expected.Select(static n => (UInt256)n).ToList();
             results.Should().BeEquivalentTo(expectedList);
         }
 
@@ -280,7 +279,7 @@ namespace Nethermind.JsonRpc.Test.Modules
 
             IEnumerable<UInt256> results = gasPriceOracle.GetSortedGasPricesFromRecentBlocks(0);
 
-            List<UInt256> expectedList = expected.Select(n => (UInt256)n).ToList();
+            List<UInt256> expectedList = expected.Select(static n => (UInt256)n).ToList();
             results.Should().BeEquivalentTo(expectedList);
         }
 
@@ -310,7 +309,7 @@ namespace Nethermind.JsonRpc.Test.Modules
         [Test]
         public void AddValidTxAndReturnCount_IfNoTxsInABlock_DefaultPriceAddedToListInstead()
         {
-            Transaction[] transactions = Array.Empty<Transaction>();
+            Transaction[] transactions = [];
             Block block = Build.A.Block.Genesis.WithTransactions(transactions).TestObject;
             IBlockFinder blockFinder = Substitute.For<IBlockFinder>();
             blockFinder.FindBlock(0).Returns(block);

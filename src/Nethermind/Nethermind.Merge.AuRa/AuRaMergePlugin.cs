@@ -1,21 +1,19 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
+using System;
 using System.Threading.Tasks;
 using Nethermind.Api;
 using Nethermind.Api.Extensions;
 using Nethermind.Blockchain;
 using Nethermind.Config;
 using Nethermind.Consensus;
-using Nethermind.Consensus.AuRa.Config;
 using Nethermind.Consensus.AuRa.InitializationSteps;
 using Nethermind.Consensus.AuRa.Transactions;
-using Nethermind.Consensus.Processing;
 using Nethermind.Consensus.Transactions;
-using Nethermind.Db;
+using Nethermind.Core;
 using Nethermind.Merge.Plugin;
 using Nethermind.Merge.Plugin.BlockProduction;
-using Nethermind.State;
 
 namespace Nethermind.Merge.AuRa
 {
@@ -28,9 +26,8 @@ namespace Nethermind.Merge.AuRa
         private AuRaNethermindApi? _auraApi;
 
         public override string Name => "AuRaMerge";
-        public override string Description => $"AuRa Merge plugin for ETH1-ETH2";
-
-        public override bool MergeEnabled => ShouldBeEnabled(_api);
+        public override string Description => "AuRa Merge plugin for ETH1-ETH2";
+        protected override bool MergeEnabled => ShouldRunSteps(_api);
 
         public override async Task Init(INethermindApi nethermindApi)
         {
@@ -49,15 +46,12 @@ namespace Nethermind.Merge.AuRa
             }
         }
 
-        public override Task<IBlockProducer> InitBlockProducer(IConsensusPlugin consensusPlugin)
+        public override IBlockProducer InitBlockProducer(IBlockProducerFactory consensusPlugin, ITxSource? txSource)
         {
             _api.BlockProducerEnvFactory = new AuRaMergeBlockProducerEnvFactory(
-                (AuRaNethermindApi)_api,
-                _api.Config<IAuraConfig>(),
-                _api.DisposeStack,
-                _api.DbProvider!,
+                _auraApi!,
+                _api.WorldStateManager!,
                 _api.BlockTree!,
-                _api.ReadOnlyTrieStore!,
                 _api.SpecProvider!,
                 _api.BlockValidator!,
                 _api.RewardCalculatorSource!,
@@ -68,7 +62,7 @@ namespace Nethermind.Merge.AuRa
                 _api.Config<IBlocksConfig>(),
                 _api.LogManager);
 
-            return base.InitBlockProducer(consensusPlugin);
+            return base.InitBlockProducer(consensusPlugin, txSource);
         }
 
         protected override PostMergeBlockProducerFactory CreateBlockProducerFactory()
@@ -79,12 +73,19 @@ namespace Nethermind.Merge.AuRa
                 _blocksConfig,
                 _api.LogManager);
 
-        private bool ShouldBeEnabled(INethermindApi api) => _mergeConfig.Enabled && IsPreMergeConsensusAuRa(api);
+        protected override IBlockFinalizationManager InitializeMergeFinilizationManager()
+        {
+            return new AuRaMergeFinalizationManager(_blockFinalizationManager,
+                _auraApi!.FinalizationManager ??
+                throw new ArgumentNullException(nameof(_auraApi.FinalizationManager),
+                    "Cannot instantiate AuRaMergeFinalizationManager when AuRaFinalizationManager is null!"),
+                _poSSwitcher);
+        }
 
         public bool ShouldRunSteps(INethermindApi api)
         {
             _mergeConfig = api.Config<IMergeConfig>();
-            return ShouldBeEnabled(api);
+            return _mergeConfig.Enabled && api.ChainSpec.SealEngineType == SealEngineType.AuRa;
         }
     }
 }

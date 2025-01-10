@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
+using System.Text.Json.Serialization;
+
 using Nethermind.Blockchain;
 using Nethermind.Core;
 using Nethermind.Facade.Eth;
@@ -38,6 +40,7 @@ namespace Nethermind.JsonRpc.Modules.Subscribe
 
         private class SubscriptionSyncingResult
         {
+            [JsonIgnore]
             public bool? IsSyncing { get; set; }
             public long? StartingBlock { get; set; }
             public long? CurrentBlock { get; set; }
@@ -46,7 +49,7 @@ namespace Nethermind.JsonRpc.Modules.Subscribe
 
         private void OnConditionsChange(object? sender, BlockEventArgs e)
         {
-            ScheduleAction(() =>
+            ScheduleAction(async () =>
             {
                 SyncingResult syncingResult = _ethSyncingInfo.GetFullInfo();
                 bool isSyncing = syncingResult.IsSyncing;
@@ -77,8 +80,11 @@ namespace Nethermind.JsonRpc.Modules.Subscribe
                     });
                 }
 
+                using (result)
+                {
+                    await JsonRpcDuplexClient.SendJsonRpcResult(result);
+                }
 
-                JsonRpcDuplexClient.SendJsonRpcResult(result);
                 _logger.Trace($"Syncing subscription {Id} printed SyncingResult object.");
             });
         }
