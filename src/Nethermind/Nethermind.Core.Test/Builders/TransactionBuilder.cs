@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Eip2930;
 using Nethermind.Crypto;
 using Nethermind.Int256;
-using Nethermind.Logging;
 
 namespace Nethermind.Core.Test.Builders
 {
@@ -34,7 +32,7 @@ namespace Nethermind.Core.Test.Builders
             return this;
         }
 
-        public TransactionBuilder<T> WithHash(Keccak? hash)
+        public TransactionBuilder<T> WithHash(Hash256? hash)
         {
             TestObjectInternal.Hash = hash;
             return this;
@@ -65,7 +63,7 @@ namespace Nethermind.Core.Test.Builders
             return this;
         }
 
-        public TransactionBuilder<T> WithChainId(ulong chainId)
+        public TransactionBuilder<T> WithChainId(ulong? chainId)
         {
             TestObjectInternal.ChainId = chainId;
             return this;
@@ -122,7 +120,7 @@ namespace Nethermind.Core.Test.Builders
             return this;
         }
 
-        public TransactionBuilder<T> WithAccessList(AccessList accessList)
+        public TransactionBuilder<T> WithAccessList(AccessList? accessList)
         {
             TestObjectInternal.AccessList = accessList;
             TestObjectInternal.ChainId = TestObjectInternal.Signature?.ChainId ?? TestObjectInternal.ChainId;
@@ -135,13 +133,13 @@ namespace Nethermind.Core.Test.Builders
             return this;
         }
 
-        public TransactionBuilder<T> WithMaxFeePerDataGas(UInt256? maxFeePerDataGas)
+        public TransactionBuilder<T> WithMaxFeePerBlobGas(UInt256? maxFeePerBlobGas)
         {
-            TestObjectInternal.MaxFeePerDataGas = maxFeePerDataGas;
+            TestObjectInternal.MaxFeePerBlobGas = maxFeePerBlobGas;
             return this;
         }
 
-        public TransactionBuilder<T> WithBlobVersionedHashes(byte[][] blobVersionedHashes)
+        public TransactionBuilder<T> WithBlobVersionedHashes(byte[][]? blobVersionedHashes)
         {
             TestObjectInternal.BlobVersionedHashes = blobVersionedHashes;
             return this;
@@ -154,7 +152,7 @@ namespace Nethermind.Core.Test.Builders
                 return this;
             }
 
-            TestObjectInternal.BlobVersionedHashes = Enumerable.Range(0, count.Value).Select(x =>
+            TestObjectInternal.BlobVersionedHashes = Enumerable.Range(0, count.Value).Select(_ =>
             {
                 byte[] bvh = new byte[32];
                 bvh[0] = KzgPolynomialCommitments.KzgBlobHashVersionV1;
@@ -163,14 +161,10 @@ namespace Nethermind.Core.Test.Builders
             return this;
         }
 
-        public TransactionBuilder<T> WithBlobs(byte[] blobs)
-        {
-            TestObjectInternal.Blobs = blobs;
+        public TransactionBuilder<T> WithShardBlobTxTypeAndFieldsIfBlobTx(int blobCount = 1, bool isMempoolTx = true)
+            => TestObjectInternal.Type == TxType.Blob ? WithShardBlobTxTypeAndFields(blobCount, isMempoolTx) : this;
 
-            return this;
-        }
-
-        public TransactionBuilder<T> WithShardBlobTxTypeAndFields(int blobCount)
+        public TransactionBuilder<T> WithShardBlobTxTypeAndFields(int blobCount = 1, bool isMempoolTx = true)
         {
             if (blobCount is 0)
             {
@@ -178,35 +172,70 @@ namespace Nethermind.Core.Test.Builders
             }
 
             TestObjectInternal.Type = TxType.Blob;
-            TestObjectInternal.MaxFeePerDataGas ??= 1;
-            TestObjectInternal.Blobs = new byte[Ckzg.Ckzg.BytesPerBlob * blobCount];
-            TestObjectInternal.BlobKzgs = new byte[Ckzg.Ckzg.BytesPerCommitment * blobCount];
-            TestObjectInternal.BlobProofs = new byte[Ckzg.Ckzg.BytesPerProof * blobCount];
-            TestObjectInternal.BlobVersionedHashes = new byte[blobCount][];
-            for (int i = 0; i < blobCount; i++)
+            TestObjectInternal.MaxFeePerBlobGas ??= 1;
+
+            if (isMempoolTx)
             {
-                TestObjectInternal.BlobVersionedHashes[i] = new byte[32];
-                TestObjectInternal.Blobs[Ckzg.Ckzg.BytesPerBlob * i] = 1;
-                KzgPolynomialCommitments.KzgifyBlob(
-                    TestObjectInternal.Blobs.AsSpan(Ckzg.Ckzg.BytesPerBlob * i, Ckzg.Ckzg.BytesPerBlob * (i + 1)),
-                    TestObjectInternal.BlobKzgs.AsSpan(Ckzg.Ckzg.BytesPerCommitment * i, Ckzg.Ckzg.BytesPerCommitment * (i + 1)),
-                    TestObjectInternal.BlobProofs.AsSpan(Ckzg.Ckzg.BytesPerProof * i, Ckzg.Ckzg.BytesPerProof * (i + 1)),
-                    TestObjectInternal.BlobVersionedHashes[i].AsSpan());
+                TestObjectInternal.BlobVersionedHashes = new byte[blobCount][];
+                ShardBlobNetworkWrapper wrapper = new(
+                    blobs: new byte[blobCount][],
+                    commitments: new byte[blobCount][],
+                    proofs: new byte[blobCount][]
+                    );
+
+                for (int i = 0; i < blobCount; i++)
+                {
+                    TestObjectInternal.BlobVersionedHashes[i] = new byte[32];
+                    wrapper.Blobs[i] = new byte[Ckzg.Ckzg.BytesPerBlob];
+                    wrapper.Blobs[i][0] = (byte)(i % 256);
+                    wrapper.Commitments[i] = new byte[Ckzg.Ckzg.BytesPerCommitment];
+                    wrapper.Proofs[i] = new byte[Ckzg.Ckzg.BytesPerProof];
+
+                    if (KzgPolynomialCommitments.IsInitialized)
+                    {
+                        KzgPolynomialCommitments.KzgifyBlob(
+                            wrapper.Blobs[i],
+                            wrapper.Commitments[i],
+                            wrapper.Proofs[i],
+                            TestObjectInternal.BlobVersionedHashes[i].AsSpan());
+                    }
+                    else
+                    {
+                        TestObjectInternal.BlobVersionedHashes[i]![0] = KzgPolynomialCommitments.KzgBlobHashVersionV1;
+                        wrapper.Commitments[i][0] = (byte)(i % 256);
+                        wrapper.Proofs[i][0] = (byte)(i % 256);
+                    }
+                }
+
+                TestObjectInternal.NetworkWrapper = wrapper;
+            }
+            else
+            {
+                return WithBlobVersionedHashes(blobCount);
             }
 
-
             return this;
         }
 
-        public TransactionBuilder<T> WithBlobKzgs(byte[] blobKzgs)
+        public TransactionBuilder<T> WithAuthorizationCodeIfAuthorizationListTx()
         {
-            TestObjectInternal.BlobKzgs = blobKzgs;
+            return TestObjectInternal.Type == TxType.SetCode ? WithAuthorizationCode(new AuthorizationTuple(0, Address.Zero, 0, new Signature(new byte[64], 0))) : this;
+        }
+
+        public TransactionBuilder<T> WithAuthorizationCode(AuthorizationTuple authTuple)
+        {
+            TestObjectInternal.AuthorizationList = TestObjectInternal.AuthorizationList is not null ? [.. TestObjectInternal.AuthorizationList, authTuple] : [authTuple];
+            return this;
+        }
+        public TransactionBuilder<T> WithAuthorizationCode(AuthorizationTuple[] authList)
+        {
+            TestObjectInternal.AuthorizationList = authList;
             return this;
         }
 
-        public TransactionBuilder<T> WithProofs(byte[] proofs)
+        public TransactionBuilder<T> With(Action<T> anyChange)
         {
-            TestObjectInternal.BlobProofs = proofs;
+            anyChange(TestObjectInternal);
             return this;
         }
 
@@ -222,6 +251,14 @@ namespace Nethermind.Core.Test.Builders
             return this;
         }
 
+        public TransactionBuilder<T> Signed(PrivateKey? privateKey = null, bool isEip155Enabled = true)
+        {
+            privateKey ??= TestItem.IgnoredPrivateKey;
+            EthereumEcdsa ecdsa = new(TestObjectInternal.ChainId ?? TestBlockchainIds.ChainId);
+
+            return Signed(ecdsa, privateKey, isEip155Enabled);
+        }
+
         // TODO: auto create ecdsa here
         public TransactionBuilder<T> SignedAndResolved(IEthereumEcdsa ecdsa, PrivateKey privateKey, bool isEip155Enabled = true)
         {
@@ -234,7 +271,7 @@ namespace Nethermind.Core.Test.Builders
         public TransactionBuilder<T> SignedAndResolved(PrivateKey? privateKey = null)
         {
             privateKey ??= TestItem.IgnoredPrivateKey;
-            EthereumEcdsa ecdsa = new(TestObjectInternal.ChainId ?? TestBlockchainIds.ChainId, LimboLogs.Instance);
+            EthereumEcdsa ecdsa = new(TestObjectInternal.ChainId ?? TestBlockchainIds.ChainId);
             ecdsa.Sign(privateKey, TestObjectInternal, true);
             TestObjectInternal.SenderAddress = privateKey.Address;
             return this;
@@ -258,6 +295,18 @@ namespace Nethermind.Core.Test.Builders
         public TransactionBuilder<T> WithIsServiceTransaction(bool isServiceTransaction)
         {
             TestObjectInternal.IsServiceTransaction = isServiceTransaction;
+            return this;
+        }
+
+        public TransactionBuilder<T> WithSourceHash(Hash256? sourceHash)
+        {
+            TestObjectInternal.SourceHash = sourceHash;
+            return this;
+        }
+
+        public TransactionBuilder<T> From(T item)
+        {
+            TestObjectInternal = item;
             return this;
         }
     }

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System.IO;
+using System.Reflection;
+using System.Text;
 using FluentAssertions;
 using Nethermind.Blockchain;
 using Nethermind.Core;
@@ -44,10 +46,12 @@ public class ForkInfoTests
     [TestCase(13_772_999, 0ul, "0xb715077d", 13_773_000ul, "Last London")]
     [TestCase(13_773_000, 0ul, "0x20c327fc", 15_050_000ul, "First Arrow Glacier")]
     [TestCase(15_049_999, 0ul, "0x20c327fc", 15_050_000ul, "Last Arrow Glacier")]
-    [TestCase(15_050_000, 0ul, "0xf0afd0e3", 1681338455ul, "First Gray Glacier")]
-    [TestCase(15_051_000, 0ul, "0xf0afd0e3", 1681338455ul, "Future Gray Glacier")]
-    [TestCase(15_051_000, 1681338455ul, "0xdce96c2d", 0ul, "First Shanghai timestamp")]
-    [TestCase(15_051_000, 9981338455ul, "0xdce96c2d", 0ul, "Future Shanghai timestamp")]
+    [TestCase(15_050_000, 0ul, "0xf0afd0e3", 1_681_338_455ul, "First Gray Glacier")]
+    [TestCase(15_051_000, 0ul, "0xf0afd0e3", 1_681_338_455ul, "Future Gray Glacier")]
+    [TestCase(15_051_000, 1_681_338_455ul, "0xdce96c2d", 1_710_338_135ul, "First Shanghai timestamp")]
+    [TestCase(15_051_000, 1_710_338_134ul, "0xdce96c2d", 1_710_338_135ul, "Future Shanghai timestamp")]
+    [TestCase(15_051_000, 1_710_338_135ul, "0x9f3d2254", 0ul, "First Cancun timestamp")]
+    [TestCase(15_051_000, 1_810_338_135ul, "0x9f3d2254", 0ul, "Future Cancun timestamp")]
     public void Fork_id_and_hash_as_expected(long head, ulong headTimestamp, string forkHashHex, ulong next, string description)
     {
         Test(head, headTimestamp, KnownHashes.MainnetGenesis, forkHashHex, next, description, MainnetSpecProvider.Instance, "foundation.json");
@@ -82,7 +86,8 @@ public class ForkInfoTests
     [TestCase(21_000_000, 1_768_000_000ul, "0x71147644", 0ul, "Future Shanghai")]
     public void Fork_id_and_hash_as_expected_with_timestamps(long head, ulong headTimestamp, string forkHashHex, ulong next, string description)
     {
-        Test(head, headTimestamp, KnownHashes.MainnetGenesis, forkHashHex, next, description, "TimestampForkIdTest.json", "../../../");
+        Test(head, headTimestamp, KnownHashes.MainnetGenesis, forkHashHex, next, description, "TimestampForkIdTest.json",
+            $"../../../../{Assembly.GetExecutingAssembly().GetName().Name}");
     }
 
     [TestCase(15_050_000, 0ul, "0xf0afd0e3", 21_000_000ul, "First Gray Glacier")]
@@ -91,74 +96,31 @@ public class ForkInfoTests
     public void Fork_id_and_hash_as_expected_with_merge_fork_id(long head, ulong headTimestamp, string forkHashHex, ulong next, string description)
     {
         ChainSpecLoader loader = new ChainSpecLoader(new EthereumJsonSerializer());
-        ChainSpec spec = loader.Load(File.ReadAllText(Path.Combine("../../../../Chains", "foundation.json")));
+        ChainSpec spec = loader.LoadFromFile("../../../../Chains/foundation.json");
         spec.Parameters.MergeForkIdTransition = 21_000_000L;
         spec.MergeForkIdBlockNumber = 21_000_000L;
         ChainSpecBasedSpecProvider provider = new ChainSpecBasedSpecProvider(spec);
         Test(head, headTimestamp, KnownHashes.MainnetGenesis, forkHashHex, next, description, provider);
     }
 
-    [TestCase(0, 0ul, "0xa3f5ab08", 1_561_651ul, "Unsynced")]
-    [TestCase(1_561_650L, 0ul, "0xa3f5ab08", 1_561_651ul, "Last Constantinople block")]
-    [TestCase(1_561_651L, 0ul, "0xc25efa5c", 4_460_644ul, "First Istanbul block")]
-    [TestCase(4_460_644L, 0ul, "0x757a1c47", 5_062_605ul, "First Berlin block")]
-    [TestCase(4_600_000L, 0ul, "0x757a1c47", 5_062_605ul, "Future Berlin block")]
-    [TestCase(5_062_605L, 0ul, "0xB8C6299D", 1678832736ul, "First London block")]
-    [TestCase(6_000_000, 0ul, "0xB8C6299D", 1678832736ul, "Future London block")]
-    [TestCase(6_000_001, 1678832736ul, "0xf9843abf", 0ul, "First Shanghai timestamp")]
-    [TestCase(6_000_001, 2678832736ul, "0xf9843abf", 0ul, "Future Shanghai timestamp")]
-    public void Fork_id_and_hash_as_expected_on_goerli(long head, ulong headTimestamp, string forkHashHex, ulong next, string description)
+    [TestCase(0, 0ul, "0xc61a6098", 1_696_000_704ul, "Unsynced")]
+    [TestCase(1, 1_696_000_703ul, "0xc61a6098", 1_696_000_704ul, "Last genesis spec block")]
+    [TestCase(2, 1_696_000_704ul, "0xfd4f016b", 1_707_305_664ul, "First Shanghai block")]
+    [TestCase(3, 1_707_305_663ul, "0xfd4f016b", 1_707_305_664ul, "Future Shanghai timestamp")]
+    [TestCase(4, 1_707_305_664ul, "0x9b192ad0", 0ul, "First Cancun timestamp")]
+    [TestCase(5, 1_717_305_664ul, "0x9b192ad0", 0ul, "Future Cancun timestamp")]
+    public void Fork_id_and_hash_as_expected_on_holesky(long head, ulong headTimestamp, string forkHashHex, ulong next, string description)
     {
-        Test(head, headTimestamp, KnownHashes.GoerliGenesis, forkHashHex, next, description, GoerliSpecProvider.Instance, "goerli.json");
-    }
-
-    [TestCase(0, 0ul, "0x3b8e0691", 1ul, "Unsynced, last Frontier block")]
-    [TestCase(1, 0ul, "0x60949295", 2ul, "First and last Homestead block")]
-    [TestCase(2, 0ul, "0x8bde40dd", 3ul, "First and last Tangerine block")]
-    [TestCase(3, 0ul, "0xcb3a64bb", 1035301ul, "First Spurious block")]
-    [TestCase(1_035_300L, 0ul, "0xcb3a64bb", 1_035_301ul, "Last Spurious block")]
-    [TestCase(1_035_301L, 0ul, "0x8d748b57", 3_660_663ul, "First Byzantium block")]
-    [TestCase(3_660_662L, 0ul, "0x8d748b57", 3_660_663ul, "Last Byzantium block")]
-    [TestCase(3_660_663L, 0ul, "0xe49cab14", 4_321_234ul, "First Constantinople block")]
-    [TestCase(4_321_233L, 0ul, "0xe49cab14", 4_321_234ul, "Last Constantinople block")]
-    [TestCase(4_321_234L, 0ul, "0xafec6b27", 5_435_345ul, "First Petersburg block")]
-    [TestCase(5_435_344L, 0ul, "0xafec6b27", 5_435_345ul, "Last Petersburg block")]
-    [TestCase(5_435_345L, 0ul, "0xcbdb8838", 8_290_928ul, "First Istanbul block")]
-    [TestCase(8_290_928L, 0ul, "0x6910c8bd", 8_897_988ul, "First Berlin block")]
-    [TestCase(8_700_000L, 0ul, "0x6910c8bd", 8_897_988ul, "Future Berlin block")]
-    [TestCase(8_897_988L, 0ul, "0x8E29F2F3", 0ul, "First London block")]
-    [TestCase(9_000_000L, 0ul, "0x8E29F2F3", 0ul, "Future London block")]
-    public void Fork_id_and_hash_as_expected_on_rinkeby(long head, ulong headTimestamp, string forkHashHex, ulong next, string description)
-    {
-        Test(head, headTimestamp, KnownHashes.RinkebyGenesis, forkHashHex, next, description, RinkebySpecProvider.Instance, "rinkeby.json");
-    }
-
-    [TestCase(0, 0ul, "0x30c7ddbc", 10ul, " Unsynced, last Frontier, Homestead and first Tangerine block")]
-    [TestCase(9, 0ul, "0x30c7ddbc", 10ul, "Last Tangerine block")]
-    [TestCase(10, 0ul, "0x63760190", 1_700_000ul, "First Spurious block")]
-    [TestCase(1_699_999L, 0ul, "0x63760190", 1_700_000ul, "Last Spurious block")]
-    [TestCase(1_700_000L, 0ul, "0x3ea159c7", 4_230_000ul, "First Byzantium block")]
-    [TestCase(4_229_999L, 0ul, "0x3ea159c7", 4_230_000ul, "Last Byzantium block")]
-    [TestCase(4_230_000L, 0ul, "0x97b544f3", 4_939_394ul, "First Constantinople block")]
-    [TestCase(4_939_393L, 0ul, "0x97b544f3", 4_939_394ul, "Last Constantinople block")]
-    [TestCase(4_939_394L, 0ul, "0xd6e2149b", 6_485_846ul, "First Petersburg block")]
-    [TestCase(6_485_845L, 0ul, "0xd6e2149b", 6_485_846ul, "Last Petersburg block")]
-    [TestCase(6_485_846L, 0ul, "0x4bc66396", 7_117_117ul, "First Istanbul block")]
-    [TestCase(7_117_117L, 0ul, "0x6727ef90", 9_812_189ul, "First Muir Glacier block")]
-    [TestCase(9_812_189L, 0ul, "0xa157d377", 10_499_401ul, "First Berlin block")]
-    [TestCase(9_900_000L, 0ul, "0xa157d377", 10_499_401ul, "Future Berlin block")]
-    [TestCase(10_499_401L, 0ul, "0x7119B6B3", 0ul, "First London block")]
-    [TestCase(12_000_000, 0ul, "0x7119B6B3", 0ul, "Future London block")]
-    public void Fork_id_and_hash_as_expected_on_ropsten(long head, ulong headTimestamp, string forkHashHex, ulong next, string description)
-    {
-        Test(head, headTimestamp, KnownHashes.RopstenGenesis, forkHashHex, next, description, RopstenSpecProvider.Instance, "ropsten.json");
+        Test(head, headTimestamp, KnownHashes.HoleskyGenesis, forkHashHex, next, description, HoleskySpecProvider.Instance, "holesky.json");
     }
 
     [TestCase(0, 0ul, "0xFE3366E7", 1735371ul, "Sepolia genesis")]
-    [TestCase(1735370, 0ul, "0xFE3366E7", 1735371ul, "Sepolia Last block before MergeForkIdTranstion")]
-    [TestCase(1735371, 0ul, "0xb96cbd13", 1677557088UL, "First block - Sepolia MergeForkIdTransition")]
-    [TestCase(1735372, 1677557088ul, "0xf7f9bc08", 0ul, "Shanghai")]
-    [TestCase(1735372, 2677557088ul, "0xf7f9bc08", 0ul, "Future Shanghai")]
+    [TestCase(1735370, 0ul, "0xFE3366E7", 1_735_371ul, "Sepolia Last block before MergeForkIdTranstion")]
+    [TestCase(1735371, 0ul, "0xb96cbd13", 1_677_557_088ul, "First block - Sepolia MergeForkIdTransition")]
+    [TestCase(1735372, 1_677_557_088ul, "0xf7f9bc08", 1_706_655_072ul, "Shanghai")]
+    [TestCase(1735372, 1_706_655_071ul, "0xf7f9bc08", 1_706_655_072ul, "Future Shanghai")]
+    [TestCase(1735373, 1_706_655_072ul, "0x88cf81d9", 0ul, "First Cancun timestamp")]
+    [TestCase(1735374, 1_716_655_072ul, "0x88cf81d9", 0ul, "Future Cancun timestamp")]
     public void Fork_id_and_hash_as_expected_on_sepolia(long head, ulong headTimestamp, string forkHashHex, ulong next, string description)
     {
         Test(head, headTimestamp, KnownHashes.SepoliaGenesis, forkHashHex, next, description, SepoliaSpecProvider.Instance, "sepolia.json");
@@ -176,23 +138,27 @@ public class ForkInfoTests
     [TestCase(16101499, 0ul, "0xb6e6cd81", 16101500ul, "Last POSDAO Activation block")]
     [TestCase(16101500, 0ul, "0x069a83d9", 19040000ul, "First Berlin block")]
     [TestCase(19039999, 0ul, "0x069a83d9", 19040000ul, "Last Berlin block")]
-    [TestCase(19040000, 0ul, "0x018479d3", 0ul, "First London block")]
-    [TestCase(21735000, 0ul, "0x018479d3", 0ul, "First GIP-31 block")]
+    [TestCase(19040000, 0ul, "0x018479d3", GnosisSpecProvider.ShanghaiTimestamp, "First London block")]
+    [TestCase(21735000, 0ul, "0x018479d3", GnosisSpecProvider.ShanghaiTimestamp, "First GIP-31 block")]
+    [TestCase(31735000, GnosisSpecProvider.ShanghaiTimestamp, "0x2efe91ba", GnosisSpecProvider.CancunTimestamp, "First Shanghai timestamp")]
+    [TestCase(41735000, GnosisSpecProvider.CancunTimestamp, "0x1384dfc1", 0ul, "First Cancun timestamp")]
+    [TestCase(91735000, GnosisSpecProvider.CancunTimestamp, "0x1384dfc1", 0ul, "Future Cancun timestamp")]
     public void Fork_id_and_hash_as_expected_on_gnosis(long head, ulong headTimestamp, string forkHashHex, ulong next, string description)
     {
         ChainSpecLoader loader = new ChainSpecLoader(new EthereumJsonSerializer());
-        ChainSpec spec = loader.Load(File.ReadAllText(Path.Combine("../../../../Chains", "gnosis.json")));
+        ChainSpec spec = loader.LoadFromFile("../../../../Chains/gnosis.json");
         ChainSpecBasedSpecProvider provider = new ChainSpecBasedSpecProvider(spec);
         Test(head, headTimestamp, KnownHashes.GnosisGenesis, forkHashHex, next, description, provider);
     }
 
     [TestCase(0L, 0UL, "0x50d39d7b", ChiadoSpecProvider.ShanghaiTimestamp, "Chiado genesis")]
-    [TestCase(3945317, ChiadoSpecProvider.ShanghaiTimestamp, "0xCC663128", 0ul, "First Shanghai timestamp")]
-    [TestCase(9945337, 9984930320ul, "0xCC663128", 0ul, "Future Shanghai timestamp")]
+    [TestCase(3945317, ChiadoSpecProvider.ShanghaiTimestamp, "0xa15a4252", ChiadoSpecProvider.CancunTimestamp, "First Shanghai timestamp")]
+    [TestCase(4_000_000, ChiadoSpecProvider.CancunTimestamp, "0x5fbc16bc", 0ul, "First Cancun timestamp")]
+    [TestCase(5_000_000, 9984930320ul, "0x5fbc16bc", 0ul, "Future Cancun timestamp")]
     public void Fork_id_and_hash_as_expected_on_chiado(long head, ulong headTimestamp, string forkHashHex, ulong next, string description)
     {
         ChainSpecLoader loader = new ChainSpecLoader(new EthereumJsonSerializer());
-        ChainSpec spec = loader.Load(File.ReadAllText(Path.Combine("../../../../Chains", "chiado.json")));
+        ChainSpec spec = loader.LoadFromFile("../../../../Chains/chiado.json");
         ChainSpecBasedSpecProvider provider = new ChainSpecBasedSpecProvider(spec);
         Test(head, headTimestamp, KnownHashes.ChiadoGenesis, forkHashHex, next, description, provider);
     }
@@ -253,15 +219,6 @@ public class ForkInfoTests
     // 0xffffffff. Local needs software update, reject.
     [TestCase(7279999, 0ul, "0x5cddc0e1", 0ul, ValidationResult.IncompatibleOrStale)]
 
-    // Local is mainnet Petersburg, remote is Rinkeby Petersburg.
-    [TestCase(7987396, 0ul, "0xafec6b27", 0ul, ValidationResult.IncompatibleOrStale)]
-
-    // Local is mainnet Gray Glacier, far in the future. Remote announces Gopherium (non existing fork)
-    // at some future block 88888888, for itself, but past block for local. Local is incompatible.
-    //
-    // This case detects non-upgraded nodes with majority hash power (typical Ropsten mess).
-    [TestCase(88888888, 0ul, "0xf0afd0e3", 88888888ul, ValidationResult.IncompatibleOrStale)]
-
     // Local is mainnet Byzantium. Remote is also in Byzantium, but announces Gopherium (non existing
     // fork) at block 7279999, before Petersburg. Local is incompatible.
     [TestCase(7279999, 0ul, "0xa00bc324", 7279999ul, ValidationResult.IncompatibleOrStale)]
@@ -316,12 +273,6 @@ public class ForkInfoTests
     // 0xffffffff. Local needs software update, reject.
     [TestCase(15_050_000, 0ul, "0x98765432", ulong.MaxValue, ValidationResult.IncompatibleOrStale, true)]
 
-    // Local is mainnet Gray Glacier, far in the future. Remote announces Gopherium (non existing fork)
-    // at some future timestamp 8888888888, for itself, but past block for local. Local is incompatible.
-    //
-    // This case detects non-upgraded nodes with majority hash power (typical Ropsten mess).
-    [TestCase(888888888, 1660000000ul, "0xf0afd0e3", 1660000000ul, ValidationResult.IncompatibleOrStale)]
-
     // Local is mainnet Gray Glacier. Remote is also in Gray Glacier, but announces Gopherium (non existing
     // fork) at block 7279999, before Shanghai. Local is incompatible.
     [TestCase(19999999, 1667999999ul, "0xf0afd0e3", 1667999999ul, ValidationResult.IncompatibleOrStale, true)]
@@ -344,12 +295,6 @@ public class ForkInfoTests
     // Local is mainnet Shanghai, remote is random Shanghai.
     [TestCase(20000000, 1_668_000_000ul, "0x12345678", 0ul, ValidationResult.IncompatibleOrStale, true)]
 
-    // Local is mainnet Shanghai, far in the future. Remote announces Gopherium (non existing fork)
-    // at some future timestamp 8888888888, for itself, but past block for local. Local is incompatible.
-    //
-    // This case detects non-upgraded nodes with majority hash power (typical Ropsten mess).
-    [TestCase(88888888, 8888888888ul, "0x71147644", 8888888888ul, ValidationResult.IncompatibleOrStale, true)]
-
     public void Test_fork_id_validation_mainnet(long headNumber, ulong headTimestamp, string hash, ulong next, ValidationResult result, bool UseTimestampSpec = false)
     {
         IBlockTree blockTree = Substitute.For<IBlockTree>();
@@ -360,7 +305,7 @@ public class ForkInfoTests
         if (UseTimestampSpec)
         {
             ChainSpecLoader loader = new ChainSpecLoader(new EthereumJsonSerializer());
-            ChainSpec spec = loader.Load(File.ReadAllText(Path.Combine("../../../", "TimestampForkIdTest.json")));
+            ChainSpec spec = loader.LoadFromFile($"../../../../{Assembly.GetExecutingAssembly().GetName().Name}/TimestampForkIdTest.json");
             specProvider = new ChainSpecBasedSpecProvider(spec);
         }
 
@@ -378,7 +323,9 @@ public class ForkInfoTests
     {
         ChainSpecLoader loader = new(new EthereumJsonSerializer());
 
-        ChainSpec spec = loader.Load($"{{\"params\":{{\"networkID\":{specNetworkId?.ToString() ?? "null"},\"chainId\":{specChainId?.ToString() ?? "null"}}},\"engine\":{{\"NethDev\":{{}}}}}}");
+        string chainspec = $"{{\"params\":{{\"networkID\":{specNetworkId?.ToString() ?? "null"},\"chainId\":{specChainId?.ToString() ?? "null"}}},\"engine\":{{\"NethDev\":{{}}}}}}";
+        using MemoryStream memoryStream = new MemoryStream(Encoding.UTF8.GetBytes(chainspec));
+        ChainSpec spec = loader.Load(memoryStream);
         ChainSpecBasedSpecProvider provider = new(spec);
 
         spec.ChainId.Should().Be(expectedChainId);
@@ -387,21 +334,21 @@ public class ForkInfoTests
         provider.NetworkId.Should().Be(expectedNetworkId);
     }
 
-    private static void Test(long head, ulong headTimestamp, Keccak genesisHash, string forkHashHex, ulong next, string description, ISpecProvider specProvider, string chainSpec, string path = "../../../../Chains")
+    private static void Test(long head, ulong headTimestamp, Hash256 genesisHash, string forkHashHex, ulong next, string description, ISpecProvider specProvider, string chainSpec, string path = "../../../../Chains")
     {
         Test(head, headTimestamp, genesisHash, forkHashHex, next, description, specProvider);
         Test(head, headTimestamp, genesisHash, forkHashHex, next, description, chainSpec, path);
     }
 
-    private static void Test(long head, ulong headTimestamp, Keccak genesisHash, string forkHashHex, ulong next, string description, string chainSpec, string path = "../../../../Chains")
+    private static void Test(long head, ulong headTimestamp, Hash256 genesisHash, string forkHashHex, ulong next, string description, string chainSpec, string path = "../../../../Chains")
     {
         ChainSpecLoader loader = new ChainSpecLoader(new EthereumJsonSerializer());
-        ChainSpec spec = loader.Load(File.ReadAllText(Path.Combine(path, chainSpec)));
+        ChainSpec spec = loader.LoadFromFile(Path.Combine(path, chainSpec));
         ChainSpecBasedSpecProvider provider = new ChainSpecBasedSpecProvider(spec);
         Test(head, headTimestamp, genesisHash, forkHashHex, next, description, provider);
     }
 
-    private static void Test(long head, ulong headTimestamp, Keccak genesisHash, string forkHashHex, ulong next, string description, ISpecProvider specProvider)
+    private static void Test(long head, ulong headTimestamp, Hash256 genesisHash, string forkHashHex, ulong next, string description, ISpecProvider specProvider)
     {
         uint expectedForkHash = Bytes.ReadEthUInt32(Bytes.FromHexString(forkHashHex));
 

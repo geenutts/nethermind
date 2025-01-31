@@ -14,22 +14,22 @@ namespace Nethermind.Evm.Precompiles
     ///     https://github.com/ethereum/EIPs/blob/vbuterin-patch-2/EIPS/bigint_modexp.md
     /// </summary>
     [Obsolete("Pre-eip2565 implementation")]
-    public class ModExpPrecompilePreEip2565 : IPrecompile
+    public class ModExpPrecompilePreEip2565 : IPrecompile<ModExpPrecompilePreEip2565>
     {
-        public static IPrecompile Instance = new ModExpPrecompilePreEip2565();
+        public static ModExpPrecompilePreEip2565 Instance = new();
 
         private ModExpPrecompilePreEip2565()
         {
         }
 
-        public Address Address { get; } = Address.FromNumber(5);
+        public static Address Address { get; } = Address.FromNumber(5);
 
         public long BaseGasCost(IReleaseSpec releaseSpec)
         {
             return 0L;
         }
 
-        public long DataGasCost(in ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
+        public long DataGasCost(ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
         {
             try
             {
@@ -56,7 +56,7 @@ namespace Nethermind.Evm.Precompiles
             }
         }
 
-        public (ReadOnlyMemory<byte>, bool) Run(in ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
+        public (byte[], bool) Run(ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
         {
             Metrics.ModExpPrecompile++;
 

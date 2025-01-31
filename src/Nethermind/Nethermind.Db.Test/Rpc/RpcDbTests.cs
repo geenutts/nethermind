@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
-using System.Linq;
 using FluentAssertions;
 using Nethermind.Core.Extensions;
 using Nethermind.Db.Rpc;
@@ -31,13 +30,20 @@ namespace Nethermind.Db.Test.Rpc
             _rpcDb = new RpcDb("Name", _jsonSerializer, _jsonRpcClient, LimboLogs.Instance, _recordDb);
         }
 
+        [TearDown]
+        public void TearDown()
+        {
+            _recordDb?.Dispose();
+            _rpcDb?.Dispose();
+        }
+
         [Test]
         public void gets_through_rpc()
         {
             string result = "0x0123";
             _jsonSerializer.Deserialize<JsonRpcSuccessResponse>(Arg.Any<string>()).Returns(new JsonRpcSuccessResponse() { Result = result });
             byte[] key = new byte[1];
-            byte[] elem = _rpcDb[key];
+            _ = _rpcDb[key];
             _jsonRpcClient.Received().Post("debug_getFromDb", "Name", key.ToHexString());
             _recordDb[key].Should().BeEquivalentTo(Bytes.FromHexString(result));
         }

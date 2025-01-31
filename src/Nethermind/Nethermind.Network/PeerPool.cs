@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Autofac.Features.AttributeFilters;
 using Nethermind.Config;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
@@ -29,11 +30,11 @@ namespace Nethermind.Network
         private readonly INetworkConfig _networkConfig;
         private readonly ILogger _logger;
 
-        public ConcurrentDictionary<PublicKey, Peer> ActivePeers { get; } = new();
-        public ConcurrentDictionary<PublicKey, Peer> Peers { get; } = new();
-        private readonly ConcurrentDictionary<PublicKey, Peer> _staticPeers = new();
+        public ConcurrentDictionary<PublicKeyAsKey, Peer> ActivePeers { get; } = new();
+        public ConcurrentDictionary<PublicKeyAsKey, Peer> Peers { get; } = new();
+        private readonly ConcurrentDictionary<PublicKeyAsKey, Peer> _staticPeers = new();
 
-        public IEnumerable<Peer> NonStaticPeers => Peers.Values.Where(p => !p.Node.IsStatic);
+        public IEnumerable<Peer> NonStaticPeers => Peers.Values.Where(static p => !p.Node.IsStatic);
         public IEnumerable<Peer> StaticPeers => _staticPeers.Values;
 
         public int PeerCount => Peers.Count;
@@ -42,13 +43,13 @@ namespace Nethermind.Network
 
         private readonly CancellationTokenSource _cancellationTokenSource = new();
 
-        Func<PublicKey, (Node Node, ConcurrentDictionary<PublicKey, Peer> Statics), Peer> _createNewNodePeer;
-        Func<PublicKey, (NetworkNode Node, ConcurrentDictionary<PublicKey, Peer> Statics), Peer> _createNewNetworkNodePeer;
+        readonly Func<PublicKeyAsKey, (Node Node, ConcurrentDictionary<PublicKeyAsKey, Peer> Statics), Peer> _createNewNodePeer;
+        readonly Func<PublicKeyAsKey, (NetworkNode Node, ConcurrentDictionary<PublicKeyAsKey, Peer> Statics), Peer> _createNewNetworkNodePeer;
 
         public PeerPool(
             INodeSource nodeSource,
             INodeStatsManager nodeStatsManager,
-            INetworkStorage peerStorage,
+            [KeyFilter(INetworkStorage.PeerDb)] INetworkStorage peerStorage,
             INetworkConfig networkConfig,
             ILogManager logManager)
         {
@@ -63,19 +64,12 @@ namespace Nethermind.Network
             _createNewNodePeer = CreateNew;
             _createNewNetworkNodePeer = CreateNew;
 
-            _nodeSource.NodeAdded += NodeSourceOnNodeAdded;
             _nodeSource.NodeRemoved += NodeSourceOnNodeRemoved;
         }
 
         private void NodeSourceOnNodeRemoved(object? sender, NodeEventArgs e)
         {
             TryRemove(e.Node.Id, out _);
-        }
-
-        private void NodeSourceOnNodeAdded(object? sender, NodeEventArgs e)
-        {
-            // _logger.Error($"Adding a node from source {sender}: {e.Node}");
-            GetOrAdd(e.Node);
         }
 
         public Peer GetOrAdd(Node node)
@@ -88,14 +82,14 @@ namespace Nethermind.Network
             return Peers.GetOrAdd(node.NodeId, valueFactory: _createNewNetworkNodePeer, (node, _staticPeers));
         }
 
-        private Peer CreateNew(PublicKey key, (Node Node, ConcurrentDictionary<PublicKey, Peer> Statics) arg)
+        private Peer CreateNew(PublicKeyAsKey key, (Node Node, ConcurrentDictionary<PublicKeyAsKey, Peer> Statics) arg)
         {
             if (arg.Node.IsBootnode || arg.Node.IsStatic)
             {
                 if (_logger.IsDebug) _logger.Debug(
                     $"Adding a {(arg.Node.IsBootnode ? "bootnode" : "stored")} candidate peer {arg.Node:s}");
             }
-            Peer peer = new(arg.Node);
+            Peer peer = new(arg.Node, _stats.GetOrAdd(arg.Node));
             if (arg.Node.IsStatic)
             {
                 arg.Statics.TryAdd(arg.Node.Id, peer);
@@ -105,9 +99,10 @@ namespace Nethermind.Network
             return peer;
         }
 
-        private Peer CreateNew(PublicKey key, (NetworkNode Node, ConcurrentDictionary<PublicKey, Peer> Statics) arg)
+        private Peer CreateNew(PublicKeyAsKey key, (NetworkNode Node, ConcurrentDictionary<PublicKeyAsKey, Peer> Statics) arg)
         {
-            Peer peer = new(new(arg.Node));
+            Node node = new(arg.Node);
+            Peer peer = new(node, _stats.GetOrAdd(node));
 
             PeerAdded?.Invoke(this, new PeerEventArgs(peer));
             return peer;
@@ -123,8 +118,8 @@ namespace Nethermind.Network
             if (Peers.TryRemove(id, out peer))
             {
                 _staticPeers.TryRemove(id, out _);
-                peer.InSession?.MarkDisconnected(DisconnectReason.DisconnectRequested, DisconnectType.Local, "admin_removePeer");
-                peer.OutSession?.MarkDisconnected(DisconnectReason.DisconnectRequested, DisconnectType.Local, "admin_removePeer");
+                peer.InSession?.MarkDisconnected(DisconnectReason.PeerRemoved, DisconnectType.Local, "admin_removePeer");
+                peer.OutSession?.MarkDisconnected(DisconnectReason.PeerRemoved, DisconnectType.Local, "admin_removePeer");
                 peer.InSession = null;
                 peer.OutSession = null;
                 PeerRemoved?.Invoke(this, new PeerEventArgs(peer));
@@ -267,13 +262,24 @@ namespace Nethermind.Network
 
         public void Start()
         {
-            List<Node> initialNodes = _nodeSource.LoadInitialList();
-            foreach (Node initialNode in initialNodes)
-            {
-                GetOrAdd(initialNode);
-            }
-
+            _ = FeedFromNodeSource();
             StartPeerPersistenceTimer();
+        }
+
+        private async Task FeedFromNodeSource()
+        {
+            CancellationToken token = _cancellationTokenSource.Token;
+
+            await foreach (Node node in _nodeSource.DiscoverNodes(token))
+            {
+                while (PeerCount >= _networkConfig.MaxCandidatePeerCount && ActivePeerCount >= _networkConfig.MaxActivePeers)
+                {
+                    if (_logger.IsDebug) _logger.Debug("Peer cleanup threshold reached. Throttling discovery.");
+                    await Task.Delay(1000, token);
+                }
+
+                GetOrAdd(node);
+            }
         }
 
         public async Task StopAsync()

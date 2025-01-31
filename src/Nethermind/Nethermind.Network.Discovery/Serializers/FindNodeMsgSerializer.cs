@@ -5,7 +5,6 @@ using DotNetty.Buffers;
 using Nethermind.Core.Crypto;
 using Nethermind.Crypto;
 using Nethermind.Network.Discovery.Messages;
-using Nethermind.Network.P2P;
 using Nethermind.Serialization.Rlp;
 
 namespace Nethermind.Network.Discovery.Serializers;
@@ -32,13 +31,13 @@ public class FindNodeMsgSerializer : DiscoveryMsgSerializerBase, IZeroInnerMessa
 
     public FindNodeMsg Deserialize(IByteBuffer msgBytes)
     {
-        (PublicKey FarPublicKey, Memory<byte> Mdc, IByteBuffer Data) results = PrepareForDeserialization(msgBytes);
-        NettyRlpStream rlpStream = new(results.Data);
+        (PublicKey FarPublicKey, _, IByteBuffer Data) = PrepareForDeserialization(msgBytes);
+        NettyRlpStream rlpStream = new(Data);
         rlpStream.ReadSequenceLength();
         byte[] searchedNodeId = rlpStream.DecodeByteArray();
         long expirationTime = rlpStream.DecodeLong();
 
-        FindNodeMsg findNodeMsg = new(results.FarPublicKey, expirationTime, searchedNodeId);
+        FindNodeMsg findNodeMsg = new(FarPublicKey, expirationTime, searchedNodeId);
         return findNodeMsg;
     }
 

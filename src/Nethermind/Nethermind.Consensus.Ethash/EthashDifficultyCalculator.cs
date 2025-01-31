@@ -10,6 +10,7 @@ using Nethermind.Int256;
 
 [assembly: InternalsVisibleTo("Ethereum.Test.Base")]
 [assembly: InternalsVisibleTo("Ethereum.Difficulty.Test")]
+[assembly: InternalsVisibleTo("Evm")]
 
 namespace Nethermind.Consensus.Ethash
 {
@@ -56,7 +57,7 @@ namespace Nethermind.Consensus.Ethash
                 timeBomb);
         }
 
-        private BigInteger TimeAdjustment(
+        private static BigInteger TimeAdjustment(
             IReleaseSpec spec,
             BigInteger parentTimestamp,
             BigInteger currentTimestamp,
@@ -80,7 +81,7 @@ namespace Nethermind.Consensus.Ethash
             return currentTimestamp < parentTimestamp + 7 ? BigInteger.One : BigInteger.MinusOne;
         }
 
-        private BigInteger TimeBomb(IReleaseSpec spec, long blockNumber)
+        private static BigInteger TimeBomb(IReleaseSpec spec, long blockNumber)
         {
             blockNumber -= spec.DifficultyBombDelay;
 

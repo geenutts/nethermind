@@ -3,7 +3,6 @@
 
 using System.Collections.Generic;
 using Ethereum.Test.Base;
-using Nethermind.Core.Attributes;
 using NUnit.Framework;
 
 namespace Ethereum.Blockchain.Test
@@ -15,7 +14,7 @@ namespace Ethereum.Blockchain.Test
         [TestCaseSource(nameof(LoadTests)), Retry(3)]
         public void Test(GeneralStateTest test)
         {
-            Assert.True(RunTest(test).Pass);
+            Assert.That(RunTest(test).Pass, Is.True);
         }
 
         public static IEnumerable<GeneralStateTest> LoadTests()

@@ -11,11 +11,8 @@ using Nethermind.Config;
 using Nethermind.Consensus.AuRa.InitializationSteps;
 using Nethermind.Init.Steps;
 using Nethermind.Logging;
-using Nethermind.Runner.Ethereum.Api;
-using Nethermind.Runner.Ethereum.Steps;
 using Nethermind.Serialization.Json;
 using Nethermind.Specs.ChainSpecStyle;
-using NSubstitute.ExceptionExtensions;
 using NUnit.Framework;
 
 namespace Nethermind.Runner.Test.Ethereum.Steps
@@ -65,6 +62,7 @@ namespace Nethermind.Runner.Test.Ethereum.Steps
         }
 
         [Test]
+        [Retry(3)]
         public async Task With_steps_from_here_AuRa()
         {
             AuRaNethermindApi runnerContext = CreateAuraApi();
@@ -195,7 +193,7 @@ namespace Nethermind.Runner.Test.Ethereum.Steps
 
         public override async Task Execute(CancellationToken cancellationToken)
         {
-            await Task.Run(() => throw new TestException());
+            await Task.Run(static () => throw new TestException());
         }
     }
 

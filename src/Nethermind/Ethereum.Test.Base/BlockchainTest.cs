@@ -17,7 +17,7 @@ namespace Ethereum.Test.Base
         public IReleaseSpec? Network { get; set; }
         public IReleaseSpec? NetworkAfterTransition { get; set; }
         public ForkActivation? TransitionForkActivation { get; set; }
-        public Keccak? LastBlockHash { get; set; }
+        public Hash256? LastBlockHash { get; set; }
         public Rlp? GenesisRlp { get; set; }
 
         public TestBlockJson[]? Blocks { get; set; }
@@ -25,9 +25,10 @@ namespace Ethereum.Test.Base
 
         public Dictionary<Address, AccountState>? Pre { get; set; }
         public Dictionary<Address, AccountState>? PostState { get; set; }
-        public Keccak? PostStateRoot { get; set; }
+        public Hash256? PostStateRoot { get; set; }
         public bool SealEngineUsed { get; set; }
         public string? LoadFailure { get; set; }
+        public ulong ChainId { get; set; }
 
         public override string? ToString()
         {

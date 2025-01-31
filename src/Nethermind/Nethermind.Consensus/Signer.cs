@@ -21,30 +21,37 @@ namespace Nethermind.Consensus
 
         public bool CanSign => _key is not null;
 
-        public Signer(ulong chainId, PrivateKey key, ILogManager logManager)
+        public bool CanSignHeader => false;
+
+        public Signer(ulong chainId, PrivateKey? key, ILogManager logManager)
+        {
+            _chainId = chainId;
+            _logger = logManager.GetClassLogger<Signer>();
+            SetSigner(key);
+        }
+
+        public Signer(ulong chainId, IProtectedPrivateKey key, ILogManager logManager)
         {
             _chainId = chainId;
             _logger = logManager?.GetClassLogger<Signer>() ?? throw new ArgumentNullException(nameof(logManager));
             SetSigner(key);
         }
 
-        public Signer(ulong chainId, ProtectedPrivateKey key, ILogManager logManager)
-        {
-            _chainId = chainId;
-            _logger = logManager?.GetClassLogger<Signer>() ?? throw new ArgumentNullException(nameof(logManager));
-            SetSigner(key);
-        }
-
-        public Signature Sign(Keccak message)
+        public Signature Sign(Hash256 message)
         {
             if (!CanSign) throw new InvalidOperationException("Cannot sign without provided key.");
-            byte[] rs = SecP256k1.SignCompact(message.Bytes, _key!.KeyBytes, out int v);
+            byte[] rs = SpanSecP256k1.SignCompact(message.Bytes, _key!.KeyBytes, out int v);
             return new Signature(rs, v);
+        }
+
+        public Signature Sign(BlockHeader header)
+        {
+            return Sign(header.Hash);
         }
 
         public ValueTask Sign(Transaction tx)
         {
-            Keccak hash = Keccak.Compute(Rlp.Encode(tx, true, true, _chainId).Bytes);
+            Hash256 hash = Keccak.Compute(Rlp.Encode(tx, true, true, _chainId).Bytes);
             tx.Signature = Sign(hash);
             tx.Signature.V = tx.Type == TxType.Legacy ? tx.Signature.V + 8 + 2 * _chainId : (ulong)(tx.Signature.RecoveryId + 27);
             return default;
@@ -59,7 +66,7 @@ namespace Nethermind.Consensus
                 _key is not null ? $"Address {Address} is configured for signing blocks." : "No address is configured for signing blocks.");
         }
 
-        public void SetSigner(ProtectedPrivateKey? key)
+        public void SetSigner(IProtectedPrivateKey? key)
         {
             PrivateKey? pk = null;
             if (key is not null)

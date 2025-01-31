@@ -57,10 +57,28 @@
     "eip3541Transition": "0x0",
     "terminalTotalDifficulty": "3C6568F12E8000",
     "mergeForkIdTransition": "0x1A7ACB",
+    "beaconChainGenesisTimestamp": "0x62b07d60",
     "eip4895TransitionTimestamp": "0x63FD7D60",
     "eip3855TransitionTimestamp": "0x63FD7D60",
     "eip3651TransitionTimestamp": "0x63FD7D60",
-    "eip3860TransitionTimestamp": "0x63FD7D60"
+    "eip3860TransitionTimestamp": "0x63FD7D60",
+    "eip1153TransitionTimestamp": "0x65B97D60",
+    "eip4788TransitionTimestamp": "0x65B97D60",
+    "eip4844TransitionTimestamp": "0x65B97D60",
+    "eip5656TransitionTimestamp": "0x65B97D60",
+    "eip6780TransitionTimestamp": "0x65B97D60",
+    "blobSchedule": {
+      "cancun": {
+        "target": 3,
+        "max": 6,
+        "baseFeeUpdateFraction": "0x32f0ed"
+      },
+      "prague": {
+        "target": 6,
+        "max": 9,
+        "baseFeeUpdateFraction":  "0x4c6964"
+      }
+    }
   },
   "genesis": {
     "seal": {

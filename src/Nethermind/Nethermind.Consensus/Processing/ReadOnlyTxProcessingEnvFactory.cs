@@ -3,43 +3,48 @@
 
 using Nethermind.Blockchain;
 using Nethermind.Core.Specs;
-using Nethermind.Db;
+using Nethermind.Evm;
+using Nethermind.Evm.TransactionProcessing;
 using Nethermind.Logging;
-using Nethermind.Trie.Pruning;
+using Nethermind.State;
 
 namespace Nethermind.Consensus.Processing;
 
-public class ReadOnlyTxProcessingEnvFactory
+public class ReadOnlyTxProcessingEnvFactory(
+    IWorldStateManager worldStateManager,
+    IReadOnlyBlockTree readOnlyBlockTree,
+    ISpecProvider specProvider,
+    ILogManager logManager,
+    IWorldState? worldStateToWarmUp = null) : IReadOnlyTxProcessingEnvFactory
 {
-    private readonly IReadOnlyDbProvider? _readOnlyDbProvider;
-    private readonly IReadOnlyTrieStore? _readOnlyTrieStore;
-    private readonly IReadOnlyBlockTree? _readOnlyBlockTree;
-    private readonly ISpecProvider? _specProvider;
-    private readonly ILogManager? _logManager;
-
     public ReadOnlyTxProcessingEnvFactory(
-        IDbProvider? dbProvider,
-        IReadOnlyTrieStore? trieStore,
-        IBlockTree? blockTree,
-        ISpecProvider? specProvider,
-        ILogManager? logManager)
-        : this(dbProvider?.AsReadOnly(false), trieStore, blockTree?.AsReadOnly(), specProvider, logManager)
+        IWorldStateManager worldStateManager,
+        IBlockTree blockTree,
+        ISpecProvider specProvider,
+        ILogManager logManager,
+        IWorldState? worldStateToWarmUp = null)
+        : this(worldStateManager, blockTree.AsReadOnly(), specProvider, logManager, worldStateToWarmUp)
     {
     }
 
-    public ReadOnlyTxProcessingEnvFactory(
-        IReadOnlyDbProvider? readOnlyDbProvider,
-        IReadOnlyTrieStore? readOnlyTrieStore,
-        IReadOnlyBlockTree? readOnlyBlockTree,
-        ISpecProvider? specProvider,
-        ILogManager? logManager)
+    public IReadOnlyTxProcessorSource Create()
     {
-        _readOnlyDbProvider = readOnlyDbProvider;
-        _readOnlyTrieStore = readOnlyTrieStore;
-        _readOnlyBlockTree = readOnlyBlockTree;
-        _specProvider = specProvider;
-        _logManager = logManager;
+        if (worldStateToWarmUp is null)
+        {
+            return new ReadOnlyTxProcessingEnv(
+                worldStateManager,
+                readOnlyBlockTree,
+                specProvider,
+                logManager);
+        }
+        else
+        {
+            return new ReadOnlyTxProcessingEnv(
+                worldStateManager,
+                readOnlyBlockTree,
+                specProvider,
+                logManager,
+                worldStateToWarmUp);
+        }
     }
-
-    public ReadOnlyTxProcessingEnv Create() => new(_readOnlyDbProvider, _readOnlyTrieStore, _readOnlyBlockTree, _specProvider, _logManager);
 }

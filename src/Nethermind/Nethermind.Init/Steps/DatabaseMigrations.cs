@@ -10,7 +10,7 @@ using Nethermind.Init.Steps.Migrations;
 
 namespace Nethermind.Init.Steps
 {
-    [RunnerStepDependencies(typeof(InitRlp), typeof(InitDatabase), typeof(InitializeBlockchain), typeof(InitializeNetwork), typeof(ResetDatabaseMigrations))]
+    [RunnerStepDependencies(typeof(InitTxTypesAndRlp), typeof(InitDatabase), typeof(InitializeBlockchain), typeof(InitializeNetwork))]
     public sealed class DatabaseMigrations : IStep
     {
         private readonly IApiWithNetwork _api;
@@ -20,14 +20,12 @@ namespace Nethermind.Init.Steps
             _api = api;
         }
 
-        public Task Execute(CancellationToken cancellationToken)
+        public async Task Execute(CancellationToken cancellationToken)
         {
             foreach (IDatabaseMigration migration in CreateMigrations())
             {
-                migration.Run();
+                await migration.Run(cancellationToken);
             }
-
-            return Task.CompletedTask;
         }
 
         private IEnumerable<IDatabaseMigration> CreateMigrations()

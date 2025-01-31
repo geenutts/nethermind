@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
+using Autofac.Features.AttributeFilters;
 using Nethermind.Core;
 using Nethermind.Core.Caching;
 using Nethermind.Db;
@@ -14,16 +15,11 @@ namespace Nethermind.State.Repositories
         private const int CacheSize = 64;
 
         private readonly object _writeLock = new();
-        private readonly LruCache<long, ChainLevelInfo> _blockInfoCache = new LruCache<long, ChainLevelInfo>(CacheSize, CacheSize, "chain level infos");
+        private readonly ClockCache<long, ChainLevelInfo> _blockInfoCache = new(CacheSize);
 
         private readonly IDb _blockInfoDb;
 
-        public ChainLevelInfoRepository(IDbProvider dbProvider)
-            : this(dbProvider.BlockInfosDb)
-        {
-        }
-
-        public ChainLevelInfoRepository(IDb blockInfoDb)
+        public ChainLevelInfoRepository([KeyFilter(DbNames.BlockInfos)] IDb blockInfoDb)
         {
             _blockInfoDb = blockInfoDb ?? throw new ArgumentNullException(nameof(blockInfoDb));
         }

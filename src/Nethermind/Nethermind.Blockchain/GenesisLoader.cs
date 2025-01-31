@@ -5,7 +5,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Nethermind.Core;
-using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
 using Nethermind.Core.Specs;
 using Nethermind.Crypto;
@@ -18,24 +17,16 @@ using Nethermind.State;
 
 namespace Nethermind.Blockchain
 {
-    public class GenesisLoader
+    public class GenesisLoader(
+        ChainSpec chainSpec,
+        ISpecProvider specProvider,
+        IWorldState stateProvider,
+        ITransactionProcessor transactionProcessor)
     {
-        private readonly ChainSpec _chainSpec;
-        private readonly ISpecProvider _specProvider;
-        private readonly IWorldState _stateProvider;
-        private readonly ITransactionProcessor _transactionProcessor;
-
-        public GenesisLoader(
-            ChainSpec chainSpec,
-            ISpecProvider specProvider,
-            IWorldState stateProvider,
-            ITransactionProcessor transactionProcessor)
-        {
-            _chainSpec = chainSpec ?? throw new ArgumentNullException(nameof(chainSpec));
-            _specProvider = specProvider ?? throw new ArgumentNullException(nameof(specProvider));
-            _stateProvider = stateProvider ?? throw new ArgumentNullException(nameof(stateProvider));
-            _transactionProcessor = transactionProcessor ?? throw new ArgumentNullException(nameof(transactionProcessor));
-        }
+        private readonly ChainSpec _chainSpec = chainSpec ?? throw new ArgumentNullException(nameof(chainSpec));
+        private readonly ISpecProvider _specProvider = specProvider ?? throw new ArgumentNullException(nameof(specProvider));
+        private readonly IWorldState _stateProvider = stateProvider ?? throw new ArgumentNullException(nameof(stateProvider));
+        private readonly ITransactionProcessor _transactionProcessor = transactionProcessor ?? throw new ArgumentNullException(nameof(transactionProcessor));
 
         public Block Load()
         {
@@ -45,11 +36,15 @@ namespace Nethermind.Blockchain
             // we no longer need the allocations - 0.5MB RAM, 9000 objects for mainnet
             _chainSpec.Allocations = null;
 
-            _stateProvider.Commit(_specProvider.GenesisSpec, true);
+            if (!_chainSpec.GenesisStateUnavailable)
+            {
+                _stateProvider.Commit(_specProvider.GenesisSpec, true);
 
-            _stateProvider.CommitTree(0);
+                _stateProvider.CommitTree(0);
 
-            genesis.Header.StateRoot = _stateProvider.StateRoot;
+                genesis.Header.StateRoot = _stateProvider.StateRoot;
+            }
+
             genesis.Header.Hash = genesis.Header.CalculateHash();
 
             return genesis;
@@ -57,7 +52,7 @@ namespace Nethermind.Blockchain
 
         private void Preallocate(Block genesis)
         {
-            foreach ((Address address, ChainSpecAllocation allocation) in _chainSpec.Allocations.OrderBy(a => a.Key))
+            foreach ((Address address, ChainSpecAllocation allocation) in _chainSpec.Allocations.OrderBy(static a => a.Key))
             {
                 _stateProvider.CreateAccount(address, allocation.Balance, allocation.Nonce);
 
@@ -85,7 +80,7 @@ namespace Nethermind.Blockchain
                     };
 
                     CallOutputTracer outputTracer = new();
-                    _transactionProcessor.Execute(constructorTransaction, genesis.Header, outputTracer);
+                    _transactionProcessor.Execute(constructorTransaction, new BlockExecutionContext(genesis.Header, specProvider.GetSpec(genesis.Header)), outputTracer);
 
                     if (outputTracer.StatusCode != StatusCode.Success)
                     {

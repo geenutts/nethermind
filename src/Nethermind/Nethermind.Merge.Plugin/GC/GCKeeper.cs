@@ -6,6 +6,7 @@ using System.Runtime;
 using System.Threading;
 using System.Threading.Tasks;
 using FastEnumUtility;
+using Nethermind.Consensus;
 using Nethermind.Core.Extensions;
 using Nethermind.Logging;
 
@@ -14,6 +15,7 @@ namespace Nethermind.Merge.Plugin.GC;
 public class GCKeeper
 {
     private static ulong _forcedGcCount = 0;
+    private readonly Lock _lock = new();
     private readonly IGCStrategy _gcStrategy;
     private readonly ILogger _logger;
     private static readonly long _defaultSize = 512.MB();
@@ -27,22 +29,17 @@ public class GCKeeper
 
     public IDisposable TryStartNoGCRegion(long? size = null)
     {
-        // SustainedLowLatency is used rather than NoGCRegion
-        // due to runtime bug https://github.com/dotnet/runtime/issues/84096
-        // The code is left in as comments so it can be reverted when the bug is fixed
         size ??= _defaultSize;
-        var priorLatencyMode = System.Runtime.GCSettings.LatencyMode;
-        //if (_gcStrategy.CanStartNoGCRegion())
-        if (priorLatencyMode != GCLatencyMode.SustainedLowLatency)
+        bool pausedGCScheduler = GCScheduler.MarkGCPaused();
+        if (_gcStrategy.CanStartNoGCRegion())
         {
             FailCause failCause = FailCause.None;
             try
             {
-                GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
-                //if (!System.GC.TryStartNoGCRegion(size.Value, true))
-                //{
-                //    failCause = FailCause.GCFailedToStartNoGCRegion;
-                //}
+                if (!System.GC.TryStartNoGCRegion(size.Value, true))
+                {
+                    failCause = FailCause.GCFailedToStartNoGCRegion;
+                }
             }
             catch (ArgumentOutOfRangeException)
             {
@@ -59,10 +56,10 @@ public class GCKeeper
                 if (_logger.IsError) _logger.Error($"{nameof(System.GC.TryStartNoGCRegion)} failed with exception.", e);
             }
 
-            return new NoGCRegion(this, priorLatencyMode, failCause, size, _logger);
+            return new NoGCRegion(this, failCause, size, pausedGCScheduler, _logger);
         }
 
-        return new NoGCRegion(this, priorLatencyMode, FailCause.StrategyDisallowed, size, _logger);
+        return new NoGCRegion(this, FailCause.StrategyDisallowed, size, pausedGCScheduler, _logger);
     }
 
     private enum FailCause
@@ -78,35 +75,33 @@ public class GCKeeper
     private class NoGCRegion : IDisposable
     {
         private readonly GCKeeper _gcKeeper;
-        private readonly GCLatencyMode _priorMode;
         private readonly FailCause _failCause;
         private readonly long? _size;
         private readonly ILogger _logger;
+        private readonly bool _pausedGCScheduler;
 
-        internal NoGCRegion(GCKeeper gcKeeper, GCLatencyMode priorMode, FailCause failCause, long? size, ILogger logger)
+        internal NoGCRegion(GCKeeper gcKeeper, FailCause failCause, long? size, bool pausedGCScheduler, ILogger logger)
         {
             _gcKeeper = gcKeeper;
-            _priorMode = priorMode;
             _failCause = failCause;
             _size = size;
+            _pausedGCScheduler = pausedGCScheduler;
             _logger = logger;
         }
 
         public void Dispose()
         {
-            // SustainedLowLatency is used rather than NoGCRegion
-            // due to runtime bug https://github.com/dotnet/runtime/issues/84096
-            // The code is left in as comments so it can be reverted when the bug is fixed
+            if (_pausedGCScheduler)
+            {
+                GCScheduler.MarkGCResumed();
+            }
             if (_failCause == FailCause.None)
             {
-                //if (GCSettings.LatencyMode == GCLatencyMode.NoGCRegion)
-                if (GCSettings.LatencyMode == GCLatencyMode.SustainedLowLatency &&
-                    _priorMode != GCLatencyMode.SustainedLowLatency)
+                if (GCSettings.LatencyMode == GCLatencyMode.NoGCRegion)
                 {
                     try
                     {
-                        GCSettings.LatencyMode = _priorMode;
-                        //System.GC.EndNoGCRegion();
+                        System.GC.EndNoGCRegion();
                         _gcKeeper.ScheduleGC();
                     }
                     catch (InvalidOperationException)
@@ -130,7 +125,7 @@ public class GCKeeper
     {
         if (_gcScheduleTask.IsCompleted)
         {
-            lock (_gcStrategy)
+            lock (_lock)
             {
                 long timeStamp = Environment.TickCount64;
                 if (TimeSpan.FromMilliseconds(timeStamp - _lastGcTimeMs).TotalSeconds <= 3)
@@ -155,8 +150,8 @@ public class GCKeeper
         {
             // This should give time to finalize response in Engine API
             // Normally we should get block every 12s (5s on some chains)
-            // Lets say we process block in 2s, then delay 1s, then invoke GC
-            await Task.Delay(1000);
+            // Lets say we process block in 2s, then delay 125ms, then invoke GC
+            await Task.Delay(125);
 
             if (GCSettings.LatencyMode != GCLatencyMode.NoGCRegion)
             {
@@ -178,7 +173,7 @@ public class GCKeeper
                     GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
                 }
 
-                System.GC.Collect((int)generation, mode, blocking: true, compacting: compacting > 0);
+                GCScheduler.Instance.GCCollect((int)generation, mode, blocking: true, compacting: compacting > 0);
             }
         }
     }

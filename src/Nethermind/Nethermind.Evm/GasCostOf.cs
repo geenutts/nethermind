@@ -39,7 +39,7 @@ namespace Nethermind.Evm
         public const long TxDataNonZero = 68;
         public const long TxDataNonZeroEip2028 = 16;
         public const long Transaction = 21000;
-        public const long DataHash = 3;
+        public const long BlobHash = 3;
         public const long Log = 375;
         public const long LogTopic = 375;
         public const long LogData = 8;
@@ -54,6 +54,7 @@ namespace Nethermind.Evm
         public const long InitCodeWord = 2; //eip-3860 gas per word cost for init code size
 
         public const long ColdSLoad = 2100; // eip-2929
+
         public const long ColdAccountAccess = 2600; // eip-2929
         public const long WarmStateRead = 100; // eip-2929
 
@@ -61,5 +62,10 @@ namespace Nethermind.Evm
         public const long AccessStorageListEntry = 1900; // eip-2930
         public const long TLoad = WarmStateRead; // eip-1153
         public const long TStore = WarmStateRead; // eip-1153
+        public const long PerAuthBaseCost = 12500; // eip-7702
+        public const long TotalCostFloorPerTokenEip7623 = 10; // eip-7632
+
+        public const long TxDataNonZeroMultiplier = TxDataNonZero / TxDataZero;
+        public const long TxDataNonZeroMultiplierEip2028 = TxDataNonZeroEip2028 / TxDataZero;
     }
 }

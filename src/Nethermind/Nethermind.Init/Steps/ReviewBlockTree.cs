@@ -14,7 +14,7 @@ namespace Nethermind.Init.Steps
     public class ReviewBlockTree : IStep
     {
         private readonly IApiWithBlockchain _api;
-        private ILogger _logger;
+        private readonly ILogger _logger;
 
         public ReviewBlockTree(INethermindApi api)
         {
@@ -39,16 +39,12 @@ namespace Nethermind.Init.Steps
         private async Task RunBlockTreeInitTasks(CancellationToken cancellationToken)
         {
             ISyncConfig syncConfig = _api.Config<ISyncConfig>();
-            if (!syncConfig.SynchronizationEnabled)
-            {
-                return;
-            }
 
             if (_api.BlockTree is null) throw new StepDependencyException(nameof(_api.BlockTree));
 
             if (!syncConfig.FastSync)
             {
-                DbBlocksLoader loader = new(_api.BlockTree, _logger);
+                using DbBlocksLoader loader = new(_api.BlockTree, _logger);
                 await _api.BlockTree.Accept(loader, cancellationToken).ContinueWith(t =>
                 {
                     if (t.IsFaulted)
@@ -63,7 +59,7 @@ namespace Nethermind.Init.Steps
             }
             else
             {
-                StartupBlockTreeFixer fixer = new(syncConfig, _api.BlockTree, _api.DbProvider!.StateDb, _logger!);
+                using StartupBlockTreeFixer fixer = new(syncConfig, _api.BlockTree, _api.WorldStateManager!.GlobalStateReader, _logger!);
                 await _api.BlockTree.Accept(fixer, cancellationToken).ContinueWith(t =>
                 {
                     if (t.IsFaulted)

@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
-using Nethermind.Core;
 using Nethermind.Core.Specs;
 using Nethermind.Int256;
 using Nethermind.Specs.Forks;
@@ -28,6 +27,7 @@ namespace Nethermind.Specs
         public IReleaseSpec GetSpec(ForkActivation forkActivation) => Olympic.Instance;
 
         public long? DaoBlockNumber => 0L;
+        public ulong? BeaconChainGenesisTimestamp => null;
 
         public ulong NetworkId => Core.BlockchainIds.Olympic;
         public ulong ChainId => NetworkId;

@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
-using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -16,7 +15,7 @@ public class RpcRpcModule : IRpcRpcModule
     public RpcRpcModule(IReadOnlyCollection<string> enabledModules)
     {
         // Geth seems to fix version at 1.0
-        _enabledModules = enabledModules.ToDictionary((s => s), s => "1.0");
+        _enabledModules = enabledModules.ToDictionary((static s => s), static s => "1.0");
     }
 
     public ResultWrapper<IDictionary<string, string>> rpc_modules()

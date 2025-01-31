@@ -2,25 +2,34 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Abstractions;
+using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using ConcurrentCollections;
+using Nethermind.Config;
 using Nethermind.Core;
+using Nethermind.Core.Crypto;
+using Nethermind.Core.Exceptions;
 using Nethermind.Core.Extensions;
 using Nethermind.Db.Rocks.Config;
 using Nethermind.Db.Rocks.Statistics;
 using Nethermind.Logging;
 using RocksDbSharp;
+using IWriteBatch = Nethermind.Core.IWriteBatch;
 
 namespace Nethermind.Db.Rocks;
 
-public class DbOnTheRocks : IDbWithSpan, ITunableDb
+public partial class DbOnTheRocks : IDb, ITunableDb
 {
-    private ILogger _logger;
+    protected ILogger _logger;
 
     private string? _fullPath;
 
@@ -29,16 +38,18 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
     private bool _isDisposing;
     private bool _isDisposed;
 
-    private readonly ConcurrentHashSet<IBatch> _currentBatches = new();
+    private readonly ConcurrentHashSet<IWriteBatch> _currentBatches = new();
 
     internal readonly RocksDb _db;
 
-    private IntPtr? _rateLimiter;
     internal WriteOptions? WriteOptions { get; private set; }
     private WriteOptions? _noWalWrite;
     private WriteOptions? _lowPriorityAndNoWalWrite;
     private WriteOptions? _lowPriorityWriteOptions;
-    private ReadOptions? _readAheadReadOptions = null;
+
+    private ReadOptions _defaultReadOptions = null!;
+    private ReadOptions _hintCacheMissOptions = null!;
+    internal ReadOptions? _readAheadReadOptions = null;
 
     internal DbOptions? DbOptions { get; private set; }
 
@@ -48,11 +59,14 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
 
     private long _maxThisDbSize;
 
-    protected IntPtr? _cache = null;
+    protected IntPtr? _rowCache = null;
 
-    private readonly RocksDbSettings _settings;
+    private readonly DbSettings _settings;
 
     protected readonly PerTableDbConfig _perTableDbConfig;
+    private ulong _maxBytesForLevelBase;
+    private ulong _targetFileSizeBase;
+    private int _minWriteBufferToMerge;
 
     private readonly IFileSystem _fileSystem;
 
@@ -62,13 +76,19 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
 
     private string CorruptMarkerPath => Path.Join(_fullPath, "corrupt.marker");
 
-    private List<DbMetricsUpdater> _metricsUpdaters = new();
+    private readonly List<IDisposable> _metricsUpdaters = new();
 
-    private ManagedIterators _readaheadIterators = new();
+    internal long _allocatedSpan = 0;
+    private long _totalReads;
+    private long _totalWrites;
+
+    private readonly IteratorManager _iteratorManager;
+    private ulong _writeBufferSize;
+    private int _maxWriteBufferNumber;
 
     public DbOnTheRocks(
         string basePath,
-        RocksDbSettings rocksDbSettings,
+        DbSettings dbSettings,
         IDbConfig dbConfig,
         ILogManager logManager,
         IList<string>? columnFamilies = null,
@@ -77,17 +97,13 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         IntPtr? sharedCache = null)
     {
         _logger = logManager.GetClassLogger();
-        _settings = rocksDbSettings;
+        _settings = dbSettings;
         Name = _settings.DbName;
         _fileSystem = fileSystem ?? new FileSystem();
         _rocksDbNative = rocksDbNative ?? RocksDbSharp.Native.Instance;
         _perTableDbConfig = new PerTableDbConfig(dbConfig, _settings);
-        _db = Init(basePath, rocksDbSettings.DbPath, dbConfig, logManager, columnFamilies, rocksDbSettings.DeleteOnStart, sharedCache);
-
-        if (_perTableDbConfig.AdditionalRocksDbOptions != null)
-        {
-            ApplyOptions(_perTableDbConfig.AdditionalRocksDbOptions);
-        }
+        _db = Init(basePath, dbSettings.DbPath, dbConfig, logManager, columnFamilies, dbSettings.DeleteOnStart, sharedCache);
+        _iteratorManager = new IteratorManager(_db, null, _readAheadReadOptions);
     }
 
     protected virtual RocksDb DoOpen(string path, (DbOptions Options, ColumnFamilies? Families) db)
@@ -107,7 +123,7 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         IList<string>? columnNames = null, bool deleteOnStart = false, IntPtr? sharedCache = null)
     {
         _fullPath = GetFullDbPath(dbPath, basePath);
-        _logger = logManager?.GetClassLogger() ?? NullLogger.Instance;
+        _logger = logManager?.GetClassLogger() ?? default;
         if (!Directory.Exists(_fullPath))
         {
             Directory.CreateDirectory(_fullPath);
@@ -125,53 +141,62 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
             BuildOptions(_perTableDbConfig, DbOptions, sharedCache);
 
             ColumnFamilies? columnFamilies = null;
-            if (columnNames != null)
+            if (columnNames is not null)
             {
                 columnFamilies = new ColumnFamilies();
-                foreach (string columnFamily in columnNames)
+                foreach (string enumColumnName in columnNames)
                 {
+                    string columnFamily = enumColumnName;
+
                     ColumnFamilyOptions options = new();
                     BuildOptions(new PerTableDbConfig(dbConfig, _settings, columnFamily), options, sharedCache);
+
+                    // "default" is a special column name with rocksdb, which is what previously not specifying column goes to
+                    if (columnFamily == "Default") columnFamily = "default";
                     columnFamilies.Add(columnFamily, options);
                 }
             }
 
             // ReSharper disable once VirtualMemberCallInConstructor
-            if (_logger.IsDebug) _logger.Debug($"Loading DB {Name,-13} from {_fullPath} with max memory footprint of {_maxThisDbSize / 1000 / 1000}MB");
+            if (_logger.IsDebug) _logger.Debug($"Loading DB {Name,-13} from {_fullPath} with max memory footprint of {_maxThisDbSize / 1000 / 1000,5} MB");
             RocksDb db = _dbsByPath.GetOrAdd(_fullPath, (s, tuple) => Open(s, tuple), (DbOptions, columnFamilies));
 
             if (dbConfig.EnableMetricsUpdater)
             {
-                _metricsUpdaters.Add(new DbMetricsUpdater(Name, DbOptions, db, null, dbConfig, _logger));
-                if (columnFamilies != null)
+                DbMetricsUpdater<DbOptions> metricUpdater = new DbMetricsUpdater<DbOptions>(Name, DbOptions, db, null, dbConfig, _logger);
+                metricUpdater.StartUpdating();
+                _metricsUpdaters.Add(metricUpdater);
+
+                if (columnFamilies is not null)
                 {
                     foreach (ColumnFamilies.Descriptor columnFamily in columnFamilies)
                     {
+                        if (columnFamily.Name == "default") continue;
                         if (db.TryGetColumnFamily(columnFamily.Name, out ColumnFamilyHandle handle))
                         {
-                            _metricsUpdaters.Add(new DbMetricsUpdater(Name + "_" + columnFamily.Name, DbOptions, db, handle, dbConfig, _logger));
+                            DbMetricsUpdater<ColumnFamilyOptions> columnMetricUpdater = new DbMetricsUpdater<ColumnFamilyOptions>(
+                                Name + "_" + columnFamily.Name, columnFamily.Options, db, handle, dbConfig, _logger);
+                            columnMetricUpdater.StartUpdating();
+                            _metricsUpdaters.Add(columnMetricUpdater);
                         }
                     }
                 }
+            }
 
-                foreach (DbMetricsUpdater metricsUpdater in _metricsUpdaters)
-                {
-                    metricsUpdater.StartUpdating();
-                }
+            if (_perTableDbConfig.EnableFileWarmer)
+            {
+                WarmupFile(_fullPath, db);
             }
 
             return db;
         }
         catch (DllNotFoundException e) when (e.Message.Contains("libdl"))
         {
-            throw new ApplicationException(
-                $"Unable to load 'libdl' necessary to init the RocksDB database. Please run{Environment.NewLine}" +
-                $"sudo apt-get update && sudo apt-get install libsnappy-dev libc6-dev libc6 unzip{Environment.NewLine}" +
-                "or similar depending on your distribution.");
+            throw;
         }
         catch (RocksDbException x) when (x.Message.Contains("LOCK"))
         {
-            if (_logger.IsWarn) _logger.Warn("If your database did not close properly you need to call 'find -type f -name '*LOCK*' -delete' from the databse folder");
+            if (_logger.IsWarn) _logger.Warn("If your database did not close properly you need to call 'find -type f -name '*LOCK*' -delete' from the database folder");
             throw;
         }
         catch (RocksDbSharpException x)
@@ -182,9 +207,84 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
 
     }
 
+    private void WarmupFile(string basePath, RocksDb db)
+    {
+        long availableMemory = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        _logger.Info($"Warming up database {Name} assuming {availableMemory} bytes of available memory");
+        List<(FileMetadata metadata, DateTime creationTime)> fileMetadatas = new();
+
+        foreach (LiveFileMetadata liveFileMetadata in db.GetLiveFilesMetadata())
+        {
+            string fullPath = Path.Join(basePath, liveFileMetadata.FileMetadata.FileName);
+            try
+            {
+                DateTime creationTime = File.GetCreationTimeUtc(fullPath);
+                fileMetadatas.Add((liveFileMetadata.FileMetadata, creationTime));
+            }
+            catch (IOException)
+            {
+                // Maybe the file is gone or something. We ignore it.
+            }
+        }
+
+        fileMetadatas.Sort((item1, item2) =>
+        {
+            // Sort them by level so that lower level get priority
+            int levelDiff = item1.metadata.FileLevel - item2.metadata.FileLevel;
+            if (levelDiff != 0) return levelDiff;
+
+            // Otherwise, we pick which file is newest.
+            return item2.creationTime.CompareTo(item1.creationTime);
+        });
+
+        long totalSize = 0;
+        fileMetadatas = fileMetadatas.TakeWhile(metadata =>
+        {
+            availableMemory -= (long)metadata.metadata.FileSize;
+            bool take = availableMemory > 0;
+            if (take)
+            {
+                totalSize += (long)metadata.metadata.FileSize;
+            }
+            return take;
+        })
+            // We reverse them again so that lower level goes last so that it is the freshest.
+            // Not all of the available memory is actually available so we are probably over reading things.
+            .Reverse()
+            .ToList();
+
+        long totalRead = 0;
+        Parallel.ForEach(fileMetadatas, (task) =>
+        {
+            string fullPath = Path.Join(basePath, task.metadata.FileName);
+            _logger.Info($"{(totalRead * 100 / (double)totalSize):00.00}% Warming up file {fullPath}");
+
+            try
+            {
+                byte[] buffer = new byte[512.KiB()];
+                using FileStream stream = File.OpenRead(fullPath);
+                int readCount = buffer.Length;
+                while (readCount == buffer.Length)
+                {
+                    readCount = stream.Read(buffer);
+                    Interlocked.Add(ref totalRead, readCount);
+                }
+            }
+            catch (FileNotFoundException)
+            {
+                // Happens sometimes. We do nothing here.
+            }
+            catch (IOException e)
+            {
+                // Something unusual, but nothing noteworthy.
+                _logger.Warn($"Exception warming up {fullPath} {e}");
+            }
+        });
+    }
+
     private void CreateMarkerIfCorrupt(RocksDbSharpException rocksDbException)
     {
-        if (rocksDbException.Message.Contains("Corruption:"))
+        if (rocksDbException.Message.Contains("Corruption:") || rocksDbException.Message.Contains("IO error"))
         {
             if (_logger.IsWarn) _logger.Warn($"Corrupted DB detected on path {_fullPath}. Please restart Nethermind to attempt repair.");
             _fileSystem.File.WriteAllText(CorruptMarkerPath, "marker");
@@ -209,25 +309,43 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
 
     protected internal void UpdateReadMetrics()
     {
-        if (_settings.UpdateReadMetrics is not null)
-            _settings.UpdateReadMetrics?.Invoke();
-        else
-            Metrics.OtherDbReads++;
+        Interlocked.Increment(ref _totalReads);
     }
 
     protected internal void UpdateWriteMetrics()
     {
-        if (_settings.UpdateWriteMetrics is not null)
-            _settings.UpdateWriteMetrics?.Invoke();
-        else
-            Metrics.OtherDbWrites++;
+        Interlocked.Increment(ref _totalWrites);
     }
 
-    public long GetSize()
+    protected virtual long FetchTotalPropertyValue(string propertyName)
+    {
+        long value = long.TryParse(_db.GetProperty(propertyName), out long parsedValue)
+            ? parsedValue
+            : 0;
+
+        return value;
+    }
+
+    public IDbMeta.DbMetric GatherMetric(bool includeSharedCache = false)
+    {
+        return new IDbMeta.DbMetric()
+        {
+            Size = GetSize(),
+            CacheSize = GetCacheSize(includeSharedCache),
+            IndexSize = GetIndexSize(),
+            MemtableSize = GetMemtableSize(),
+            TotalReads = _totalReads,
+            TotalWrites = _totalWrites,
+        };
+    }
+
+    private long GetSize()
     {
         try
         {
-            return long.TryParse(_db.GetProperty("rocksdb.total-sst-files-size"), out long size) ? size : 0;
+            long sstSize = FetchTotalPropertyValue("rocksdb.total-sst-files-size");
+            long blobSize = FetchTotalPropertyValue("rocksdb.total-blob-file-size");
+            return sstSize + blobSize;
         }
         catch (RocksDbSharpException e)
         {
@@ -238,11 +356,16 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         return 0;
     }
 
-    public long GetCacheSize()
+    private long GetCacheSize(bool includeSharedCache = false)
     {
         try
         {
-            return long.TryParse(_db.GetProperty("rocksdb.block-cache-usage"), out long size) ? size : 0;
+            if (!includeSharedCache)
+            {
+                // returning 0 as we are using shared cache.
+                return 0;
+            }
+            return FetchTotalPropertyValue("rocksdb.block-cache-usage");
         }
         catch (RocksDbSharpException e)
         {
@@ -253,11 +376,11 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         return 0;
     }
 
-    public long GetIndexSize()
+    private long GetIndexSize()
     {
         try
         {
-            return long.TryParse(_db.GetProperty("rocksdb.estimate-table-readers-mem"), out long size) ? size : 0;
+            return FetchTotalPropertyValue("rocksdb.estimate-table-readers-mem");
         }
         catch (RocksDbSharpException e)
         {
@@ -268,11 +391,11 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         return 0;
     }
 
-    public long GetMemtableSize()
+    private long GetMemtableSize()
     {
         try
         {
-            return long.TryParse(_db.GetProperty("rocksdb.cur-size-all-mem-tables"), out long size) ? size : 0;
+            return FetchTotalPropertyValue("rocksdb.cur-size-all-mem-tables");
         }
         catch (RocksDbSharpException e)
         {
@@ -281,65 +404,97 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         }
 
         return 0;
+    }
+
+    [GeneratedRegex("(?<optionName>[^; ]+)\\=(?<optionValue>[^; ]+);", RegexOptions.Singleline | RegexOptions.NonBacktracking | RegexOptions.ExplicitCapture)]
+    private static partial Regex ExtractDbOptionsRegex();
+
+    public static IDictionary<string, string> ExtractOptions(string dbOptions)
+    {
+        Dictionary<string, string> asDict = new();
+        if (string.IsNullOrEmpty(dbOptions)) return asDict;
+
+        foreach (Match match in ExtractDbOptionsRegex().Matches(dbOptions))
+        {
+            asDict[match.Groups["optionName"].ToString()] = match.Groups["optionValue"].ToString();
+        }
+
+        return asDict;
     }
 
     protected virtual void BuildOptions<T>(PerTableDbConfig dbConfig, Options<T> options, IntPtr? sharedCache) where T : Options<T>
     {
-        _maxThisDbSize = 0;
+        // This section is about the table factory.. and block cache apparently.
+        // This effect the format of the SST files and usually require resync to take effect.
+        // Note: Keep in mind, the term 'index' here usually means mapping to a block, not to a value.
+        #region TableFactory sections
+
+        string allOptions = dbConfig.RocksDbOptions + dbConfig.AdditionalRocksDbOptions;
+        IDictionary<string, string> optionsAsDict = ExtractOptions(allOptions);
+        _targetFileSizeBase = ulong.Parse(optionsAsDict["target_file_size_base"]);
+        _maxBytesForLevelBase = ulong.Parse(optionsAsDict["max_bytes_for_level_base"]);
+        _minWriteBufferToMerge = int.Parse(optionsAsDict["min_write_buffer_number_to_merge"]);
+        _writeBufferSize = ulong.Parse(optionsAsDict["write_buffer_size"]);
+        _maxWriteBufferNumber = int.Parse(optionsAsDict["max_write_buffer_number"]);
+
         BlockBasedTableOptions tableOptions = new();
-        tableOptions.SetBlockSize((ulong)(dbConfig.BlockSize ?? 16 * 1024));
-        tableOptions.SetPinL0FilterAndIndexBlocksInCache(true);
-        tableOptions.SetCacheIndexAndFilterBlocks(dbConfig.CacheIndexAndFilterBlocks);
-        tableOptions.SetIndexType(BlockBasedTableIndexType.TwoLevelIndex);
-        _rocksDbNative.rocksdb_block_based_options_set_partition_filters(tableOptions.Handle, true);
-        _rocksDbNative.rocksdb_block_based_options_set_metadata_block_size(tableOptions.Handle, 4096);
-        _rocksDbNative.rocksdb_block_based_options_set_cache_index_and_filter_blocks_with_high_priority(tableOptions.Handle, true);
-        tableOptions.SetFormatVersion(5);
-
-        /*
-        ColumnFamilyOptions* ColumnFamilyOptions::OptimizeForPointLookup(
-            uint64_t block_cache_size_mb) {
-          BlockBasedTableOptions block_based_options;
-          block_based_options.data_block_index_type =
-              BlockBasedTableOptions::kDataBlockBinaryAndHash;
-          block_based_options.data_block_hash_table_util_ratio = 0.75;
-          block_based_options.filter_policy.reset(NewBloomFilterPolicy(10));
-          block_based_options.block_cache =
-              NewLRUCache(static_cast<size_t>(block_cache_size_mb * 1024 * 1024));
-          table_factory.reset(new BlockBasedTableFactory(block_based_options));
-          memtable_prefix_bloom_size_ratio = 0.02;
-          memtable_whole_key_filtering = true;
-          return this;
+        options.SetBlockBasedTableFactory(tableOptions);
+        IntPtr optsPtr = Marshal.StringToHGlobalAnsi(dbConfig.RocksDbOptions);
+        try
+        {
+            _rocksDbNative.rocksdb_get_options_from_string(options.Handle, optsPtr, options.Handle);
         }
-         */
+        finally
+        {
+            Marshal.FreeHGlobal(optsPtr);
+        }
 
-        // Rewrote OptimizeForPointLookup to be able to use shared block cache.
-        tableOptions.SetFilterPolicy(BloomFilterPolicy.Create(10, false));
+        ulong blockCacheSize = 0;
+        if (optionsAsDict.TryGetValue("block_based_table_factory.block_cache", out string? blockCacheSizeStr))
+        {
+            blockCacheSize = ulong.Parse(blockCacheSizeStr);
+        }
 
-        // In theory, this should reduce CPU, but I don't see any different.
-        // It seems increase disk space use by about 1 GB, which again, could be just noise. I'll just keep this.
-        // That said, on lower block size, it'll probably be useless.
-        _rocksDbNative.rocksdb_block_based_options_set_data_block_index_type(tableOptions.Handle, 1);
-        _rocksDbNative.rocksdb_block_based_options_set_data_block_hash_ratio(tableOptions.Handle, 0.75);
-
-        _rocksDbNative.rocksdb_options_set_memtable_whole_key_filtering(options.Handle, true);
-        _rocksDbNative.rocksdb_options_set_memtable_prefix_bloom_size_ratio(options.Handle, 0.02);
-        options.SetOptimizeFiltersForHits(1);
-
-        ulong blockCacheSize = dbConfig.BlockCacheSize;
-        if (sharedCache != null && blockCacheSize == 0)
+        if (sharedCache is not null && blockCacheSize == 0)
         {
             tableOptions.SetBlockCache(sharedCache.Value);
         }
-        else
+
+        if (dbConfig.WriteBufferSize is not null)
         {
-            _cache = RocksDbSharp.Native.Instance.rocksdb_cache_create_lru(new UIntPtr(blockCacheSize));
-            tableOptions.SetBlockCache(_cache.Value);
+            _writeBufferSize = dbConfig.WriteBufferSize.Value;
+            options.SetWriteBufferSize(dbConfig.WriteBufferSize.Value);
         }
 
-        options.SetCreateIfMissing();
-        options.SetAdviseRandomOnOpen(true);
+        if (dbConfig.WriteBufferNumber is not null)
+        {
+            _maxWriteBufferNumber = (int)dbConfig.WriteBufferNumber.Value;
+            options.SetMaxWriteBufferNumber(_maxWriteBufferNumber);
+        }
+        if (_maxWriteBufferNumber < 1) throw new InvalidConfigurationException($"Error initializing {Name} db. Max write buffer number must be more than 1. max write buffer number: {_maxWriteBufferNumber}", ExitCodes.GeneralError);
 
+        #endregion
+
+        #region WriteBuffer
+
+        // Note: Write buffer and write buffer num are modified by MemoryHintMan.
+        lock (_dbsByPath)
+        {
+            ulong writeBufferSize = _writeBufferSize;
+            int writeBufferNumber = _maxWriteBufferNumber;
+            _maxThisDbSize += (long)writeBufferSize * writeBufferNumber;
+            Interlocked.Add(ref _maxRocksSize, _maxThisDbSize);
+            if (_logger.IsDebug)
+                _logger.Debug(
+                    $"Expected max memory footprint of {Name} DB is {_maxThisDbSize / 1000 / 1000} MB ({writeBufferNumber} * {writeBufferSize / 1000 / 1000} MB + {blockCacheSize / 1000 / 1000} MB)");
+            if (_logger.IsDebug) _logger.Debug($"Total max DB footprint so far is {_maxRocksSize / 1000 / 1000} MB");
+            ThisNodeInfo.AddInfo("Mem est DB   :", $"{_maxRocksSize / 1000 / 1000} MB".PadLeft(8));
+        }
+
+        #endregion
+
+        // This section affect compactions, flushes and the LSM shape.
+        #region Compaction
         /*
          * Multi-Threaded Compactions
          * Compactions are needed to remove multiple copies of the same key that may occur if an application overwrites an existing key. Compactions also process deletions of keys. Compactions may occur in multiple threads if configured appropriately.
@@ -349,66 +504,76 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
          * TKS: CPU goes to insane 30% usage on idle - compacting only app
          */
         options.SetMaxBackgroundCompactions(Environment.ProcessorCount);
+        options.SetMaxBackgroundFlushes(Environment.ProcessorCount);
+
+        // This one set the threadpool env, so its actually different from the above two
+        options.IncreaseParallelism(Environment.ProcessorCount);
+
+        // VERY important to reduce stalls. Allow L0->L1 compaction to happen with multiple thread.
+        _rocksDbNative.rocksdb_options_set_max_subcompactions(options.Handle, (uint)Environment.ProcessorCount);
+
+        #endregion
+
+        #region Other options
+
+        if (dbConfig.RowCacheSize > 0)
+        {
+            // Row cache is basically a per-key cache. Nothing special to it. This is different from block cache
+            // which cache the whole block at once, so read still need to traverse the block index, so this could be
+            // more CPU efficient.
+            // Note: Memtable also act like a per-key cache, that does not get updated on read. So in some case
+            // maybe it make more sense to put more memory to memtable.
+            _rowCache = _rocksDbNative.rocksdb_cache_create_lru(new UIntPtr(dbConfig.RowCacheSize.Value));
+            _rocksDbNative.rocksdb_options_set_row_cache(options.Handle, _rowCache.Value);
+        }
+
+        options.SetCreateIfMissing();
 
         if (dbConfig.MaxOpenFiles.HasValue)
         {
             options.SetMaxOpenFiles(dbConfig.MaxOpenFiles.Value);
         }
 
-        if (dbConfig.MaxBytesPerSec.HasValue)
+        if (dbConfig.EnableDbStatistics)
         {
-            _rateLimiter =
-                _rocksDbNative.rocksdb_ratelimiter_create(dbConfig.MaxBytesPerSec.Value, 1000, 10);
-            _rocksDbNative.rocksdb_options_set_ratelimiter(options.Handle, _rateLimiter.Value);
+            options.EnableStatistics();
+        }
+        options.SetStatsDumpPeriodSec(dbConfig.StatsDumpPeriodSec);
+
+        if (dbConfig.AdditionalRocksDbOptions is not null)
+        {
+            optsPtr = Marshal.StringToHGlobalAnsi(dbConfig.AdditionalRocksDbOptions);
+            try
+            {
+                _rocksDbNative.rocksdb_get_options_from_string(options.Handle, optsPtr, options.Handle);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(optsPtr);
+            }
         }
 
-        ulong writeBufferSize = dbConfig.WriteBufferSize;
-        options.SetWriteBufferSize(writeBufferSize);
-        int writeBufferNumber = (int)dbConfig.WriteBufferNumber;
-        options.SetMaxWriteBufferNumber(writeBufferNumber);
-        options.SetMinWriteBufferNumberToMerge(2);
+        #endregion
 
-        lock (_dbsByPath)
-        {
-            _maxThisDbSize += (long)writeBufferSize * writeBufferNumber;
-            Interlocked.Add(ref _maxRocksSize, _maxThisDbSize);
-            if (_logger.IsDebug)
-                _logger.Debug(
-                    $"Expected max memory footprint of {Name} DB is {_maxThisDbSize / 1000 / 1000}MB ({writeBufferNumber} * {writeBufferSize / 1000 / 1000}MB + {blockCacheSize / 1000 / 1000}MB)");
-            if (_logger.IsDebug) _logger.Debug($"Total max DB footprint so far is {_maxRocksSize / 1000 / 1000}MB");
-            ThisNodeInfo.AddInfo("Mem est DB   :", $"{_maxRocksSize / 1000 / 1000}MB".PadLeft(8));
-        }
+        #region read-write options
+        WriteOptions = CreateWriteOptions(dbConfig);
 
-        options.SetBlockBasedTableFactory(tableOptions);
-
-        options.SetMaxBackgroundFlushes(Environment.ProcessorCount);
-        options.IncreaseParallelism(Environment.ProcessorCount);
-        options.SetRecycleLogFileNum(dbConfig
-            .RecycleLogFileNum); // potential optimization for reusing allocated log files
-
-        options.SetUseDirectReads(dbConfig.UseDirectReads);
-        options.SetUseDirectIoForFlushAndCompaction(dbConfig.UseDirectIoForFlushAndCompactions);
-
-        // VERY important to reduce stalls. Allow L0->L1 compaction to happen with multiple thread.
-        _rocksDbNative.rocksdb_options_set_max_subcompactions(options.Handle, (uint)Environment.ProcessorCount);
-
-        //            options.SetLevelCompactionDynamicLevelBytes(true); // only switch on on empty DBs
-        WriteOptions = new WriteOptions();
-        WriteOptions.SetSync(dbConfig
-            .WriteAheadLogSync); // potential fix for corruption on hard process termination, may cause performance degradation
-
-        _noWalWrite = new WriteOptions();
-        _noWalWrite.SetSync(dbConfig.WriteAheadLogSync);
+        _noWalWrite = CreateWriteOptions(dbConfig);
         _noWalWrite.DisableWal(1);
 
-        _lowPriorityWriteOptions = new WriteOptions();
-        _lowPriorityWriteOptions.SetSync(dbConfig.WriteAheadLogSync);
-        Native.Instance.rocksdb_writeoptions_set_low_pri(_lowPriorityWriteOptions.Handle, true);
+        _lowPriorityWriteOptions = CreateWriteOptions(dbConfig);
+        _rocksDbNative.rocksdb_writeoptions_set_low_pri(_lowPriorityWriteOptions.Handle, true);
 
-        _lowPriorityAndNoWalWrite = new WriteOptions();
-        _lowPriorityAndNoWalWrite.SetSync(dbConfig.WriteAheadLogSync);
+        _lowPriorityAndNoWalWrite = CreateWriteOptions(dbConfig);
         _lowPriorityAndNoWalWrite.DisableWal(1);
-        Native.Instance.rocksdb_writeoptions_set_low_pri(_lowPriorityAndNoWalWrite.Handle, true);
+        _rocksDbNative.rocksdb_writeoptions_set_low_pri(_lowPriorityAndNoWalWrite.Handle, true);
+
+        _defaultReadOptions = new ReadOptions();
+        _defaultReadOptions.SetVerifyChecksums(dbConfig.VerifyChecksum ?? true);
+
+        _hintCacheMissOptions = new ReadOptions();
+        _hintCacheMissOptions.SetVerifyChecksums(dbConfig.VerifyChecksum ?? true);
+        _hintCacheMissOptions.SetFillCache(false);
 
         // When readahead flag is on, the next keys are expected to be after the current key. Increasing this value,
         // will increase the chances that the next keys will be in the cache, which reduces iops and latency. This
@@ -418,20 +583,19 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         if (dbConfig.ReadAheadSize != 0)
         {
             _readAheadReadOptions = new ReadOptions();
+            _readAheadReadOptions.SetVerifyChecksums(dbConfig.VerifyChecksum ?? true);
             _readAheadReadOptions.SetReadaheadSize(dbConfig.ReadAheadSize ?? (ulong)256.KiB());
             _readAheadReadOptions.SetTailing(true);
         }
+        #endregion
+    }
 
-        if (dbConfig.DisableCompression == true)
-        {
-            options.SetCompression(Compression.No);
-        }
-
-        if (dbConfig.EnableDbStatistics)
-        {
-            options.EnableStatistics();
-        }
-        options.SetStatsDumpPeriodSec(dbConfig.StatsDumpPeriodSec);
+    private static WriteOptions CreateWriteOptions(PerTableDbConfig dbConfig)
+    {
+        WriteOptions options = new();
+        // potential fix for corruption on hard process termination, may cause performance degradation
+        options.SetSync(dbConfig.WriteAheadLogSync);
+        return options;
     }
 
     public byte[]? this[ReadOnlySpan<byte> key]
@@ -442,28 +606,27 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
 
     public byte[]? Get(ReadOnlySpan<byte> key, ReadFlags flags = ReadFlags.None)
     {
-        return GetWithColumnFamily(key, null, _readaheadIterators, flags);
+        return GetWithColumnFamily(key, null, _iteratorManager, flags);
     }
 
-    internal byte[]? GetWithColumnFamily(ReadOnlySpan<byte> key, ColumnFamilyHandle? cf, ManagedIterators readaheadIterators, ReadFlags flags = ReadFlags.None)
+    internal byte[]? GetWithColumnFamily(ReadOnlySpan<byte> key, ColumnFamilyHandle? cf, IteratorManager iteratorManager, ReadFlags flags = ReadFlags.None)
     {
-        if (_isDisposing)
-        {
-            throw new ObjectDisposedException($"Attempted to read form a disposed database {Name}");
-        }
+        ObjectDisposedException.ThrowIf(_isDisposing, this);
 
         UpdateReadMetrics();
 
         try
         {
-            if (_readAheadReadOptions != null && (flags & ReadFlags.HintReadAhead) != 0)
+            if (_readAheadReadOptions is not null && (flags & ReadFlags.HintReadAhead) != 0)
             {
-                if (!readaheadIterators.IsValueCreated)
+                using IteratorManager.RentWrapper wrapper = iteratorManager.Rent(flags);
+                Iterator iterator = wrapper.Iterator;
+
+                if (iterator.Valid() && TryCloseReadAhead(iterator, key, out byte[]? closeRes))
                 {
-                    readaheadIterators.Value = _db.NewIterator(cf, _readAheadReadOptions);
+                    return closeRes;
                 }
 
-                Iterator iterator = readaheadIterators.Value!;
                 iterator.Seek(key);
                 if (iterator.Valid() && Bytes.AreEqual(iterator.GetKeySpan(), key))
                 {
@@ -471,7 +634,7 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
                 }
             }
 
-            return _db.Get(key, cf);
+            return _db.Get(key, cf, (flags & ReadFlags.HintCacheMiss) != 0 ? _hintCacheMissOptions : _defaultReadOptions);
         }
         catch (RocksDbSharpException e)
         {
@@ -480,23 +643,86 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         }
     }
 
+    /// <summary>
+    /// iterator.Next() is about 10 to 20 times faster than iterator.Seek().
+    /// Here we attempt to do that first. To prevent futile attempt some logic is added to approximately detect
+    /// if the requested key is too far from the current key and skip this entirely.
+    /// </summary>
+    /// <param name="iterator"></param>
+    /// <param name="key"></param>
+    /// <returns></returns>
+    private bool TryCloseReadAhead(Iterator iterator, ReadOnlySpan<byte> key, out byte[]? result)
+    {
+        // Probably hash db. Can't really do this with hashdb. Even with batched trie visitor, its going to skip a lot.
+        if (key.Length <= 32)
+        {
+            result = null;
+            return false;
+        }
+
+        iterator.Next();
+        ReadOnlySpan<byte> currentKey = iterator.GetKeySpan();
+        int compareResult = currentKey.SequenceCompareTo(key);
+        if (compareResult == 0)
+        {
+            result = iterator.Value();
+            return true; // This happens A LOT.
+        }
+
+        result = null;
+        if (compareResult > 0)
+        {
+            return false;
+        }
+
+        // This happens, 0.5% of the time.
+        // This is only useful for state as storage have way too different different address range between different
+        // contract. That said, there isn't any real good threshold. Threshold is for some reasonably high value
+        // above the average distance.
+        ulong currentKeyInt = BinaryPrimitives.ReadUInt64BigEndian(currentKey);
+        ulong requestedKeyInt = BinaryPrimitives.ReadUInt64BigEndian(key);
+        ulong distance = requestedKeyInt - currentKeyInt;
+        if (distance > 1_000_000_000)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < 5 && compareResult < 0; i++)
+        {
+            iterator.Next();
+            compareResult = iterator.GetKeySpan().SequenceCompareTo(key);
+        }
+
+        if (compareResult == 0)
+        {
+            result = iterator.Value();
+            return true;
+        }
+
+        if (compareResult > 0)
+        {
+            // We've skipped it somehow
+            result = null;
+            return true;
+        }
+
+        return false;
+    }
+
     public void Set(ReadOnlySpan<byte> key, byte[]? value, WriteFlags flags = WriteFlags.None)
     {
         SetWithColumnFamily(key, null, value, flags);
     }
 
-    internal void SetWithColumnFamily(ReadOnlySpan<byte> key, ColumnFamilyHandle? cf, byte[]? value, WriteFlags flags = WriteFlags.None)
+    internal void SetWithColumnFamily(ReadOnlySpan<byte> key, ColumnFamilyHandle? cf, ReadOnlySpan<byte> value, WriteFlags flags = WriteFlags.None)
     {
-        if (_isDisposing)
-        {
-            throw new ObjectDisposedException($"Attempted to write to a disposed database {Name}");
-        }
+        ObjectDisposedException.ThrowIf(_isDisposing, this);
 
         UpdateWriteMetrics();
 
         try
         {
-            if (value is null)
+            if (value.IsNull())
             {
                 _db.Remove(key, cf, WriteFlagsToWriteOptions(flags));
             }
@@ -514,17 +740,17 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
 
     public WriteOptions? WriteFlagsToWriteOptions(WriteFlags flags)
     {
-        if ((flags & WriteFlags.LowPriorityAndNoWAL) != 0)
+        if ((flags & WriteFlags.LowPriorityAndNoWAL) == WriteFlags.LowPriorityAndNoWAL)
         {
             return _lowPriorityAndNoWalWrite;
         }
 
-        if ((flags & WriteFlags.DisableWAL) != 0)
+        if ((flags & WriteFlags.DisableWAL) == WriteFlags.DisableWAL)
         {
             return _noWalWrite;
         }
 
-        if ((flags & WriteFlags.LowPriority) != 0)
+        if ((flags & WriteFlags.LowPriority) == WriteFlags.LowPriority)
         {
             return _lowPriorityWriteOptions;
         }
@@ -549,20 +775,26 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         }
     }
 
-    public Span<byte> GetSpan(ReadOnlySpan<byte> key)
+    public Span<byte> GetSpan(ReadOnlySpan<byte> key, ReadFlags flags)
     {
-        if (_isDisposing)
-        {
-            throw new ObjectDisposedException($"Attempted to read form a disposed database {Name}");
-        }
+        return GetSpanWithColumnFamily(key, null, flags);
+    }
+
+    internal Span<byte> GetSpanWithColumnFamily(ReadOnlySpan<byte> key, ColumnFamilyHandle? cf, ReadFlags flags)
+    {
+        ObjectDisposedException.ThrowIf(_isDisposing, this);
 
         UpdateReadMetrics();
 
         try
         {
-            Span<byte> span = _db.GetSpan(key);
+            Span<byte> span = _db.GetSpan(key, cf, (flags & ReadFlags.HintCacheMiss) != 0 ? _hintCacheMissOptions : _defaultReadOptions);
+
             if (!span.IsNullOrEmpty())
+            {
+                Interlocked.Increment(ref _allocatedSpan);
                 GC.AddMemoryPressure(span.Length);
+            }
             return span;
         }
         catch (RocksDbSharpException e)
@@ -572,39 +804,24 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         }
     }
 
-    public void PutSpan(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value)
+    public void PutSpan(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, WriteFlags writeFlags)
     {
-        if (_isDisposing)
-        {
-            throw new ObjectDisposedException($"Attempted to write form a disposed database {Name}");
-        }
-
-        UpdateWriteMetrics();
-
-        try
-        {
-            _db.Put(key, value, null, WriteOptions);
-        }
-        catch (RocksDbSharpException e)
-        {
-            CreateMarkerIfCorrupt(e);
-            throw;
-        }
+        SetWithColumnFamily(key, null, value, writeFlags);
     }
 
-    public void DangerousReleaseMemory(in Span<byte> span)
+    public void DangerousReleaseMemory(in ReadOnlySpan<byte> span)
     {
         if (!span.IsNullOrEmpty())
+        {
+            Interlocked.Decrement(ref _allocatedSpan);
             GC.RemoveMemoryPressure(span.Length);
+        }
         _db.DangerousReleaseMemory(span);
     }
 
     public void Remove(ReadOnlySpan<byte> key)
     {
-        if (_isDisposing)
-        {
-            throw new ObjectDisposedException($"Attempted to delete form a disposed database {Name}");
-        }
+        ObjectDisposedException.ThrowIf(_isDisposing, this);
 
         try
         {
@@ -617,12 +834,9 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         }
     }
 
-    public IEnumerable<KeyValuePair<byte[], byte[]>> GetAll(bool ordered = false)
+    public IEnumerable<KeyValuePair<byte[], byte[]?>> GetAll(bool ordered = false)
     {
-        if (_isDisposing)
-        {
-            throw new ObjectDisposedException($"Attempted to create an iterator on a disposed database {Name}");
-        }
+        ObjectDisposedException.ThrowIf(_isDisposing, this);
 
         Iterator iterator = CreateIterator(ordered);
         return GetAllCore(iterator);
@@ -644,12 +858,17 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         }
     }
 
+    public IEnumerable<byte[]> GetAllKeys(bool ordered = false)
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        Iterator iterator = CreateIterator(ordered);
+        return GetAllKeysCore(iterator);
+    }
+
     public IEnumerable<byte[]> GetAllValues(bool ordered = false)
     {
-        if (_isDisposing)
-        {
-            throw new ObjectDisposedException($"Attempted to read form a disposed database {Name}");
-        }
+        ObjectDisposedException.ThrowIf(_isDisposing, this);
 
         Iterator iterator = CreateIterator(ordered);
         return GetAllValuesCore(iterator);
@@ -697,14 +916,53 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         }
     }
 
-    public IEnumerable<KeyValuePair<byte[], byte[]>> GetAllCore(Iterator iterator)
+    internal IEnumerable<byte[]> GetAllKeysCore(Iterator iterator)
     {
         try
         {
-            if (_isDisposing)
+            try
             {
-                throw new ObjectDisposedException($"Attempted to read form a disposed database {Name}");
+                iterator.SeekToFirst();
             }
+            catch (RocksDbSharpException e)
+            {
+                CreateMarkerIfCorrupt(e);
+                throw;
+            }
+
+            while (iterator.Valid())
+            {
+                yield return iterator.Key();
+                try
+                {
+                    iterator.Next();
+                }
+                catch (RocksDbSharpException e)
+                {
+                    CreateMarkerIfCorrupt(e);
+                    throw;
+                }
+            }
+        }
+        finally
+        {
+            try
+            {
+                iterator.Dispose();
+            }
+            catch (RocksDbSharpException e)
+            {
+                CreateMarkerIfCorrupt(e);
+                throw;
+            }
+        }
+    }
+
+    public IEnumerable<KeyValuePair<byte[], byte[]?>> GetAllCore(Iterator iterator)
+    {
+        try
+        {
+            ObjectDisposedException.ThrowIf(_isDisposing, this);
 
             try
             {
@@ -718,7 +976,7 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
 
             while (iterator.Valid())
             {
-                yield return new KeyValuePair<byte[], byte[]>(iterator.Key(), iterator.Value());
+                yield return new KeyValuePair<byte[], byte[]?>(iterator.Key(), iterator.Value());
 
                 try
                 {
@@ -747,16 +1005,16 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
 
     public bool KeyExists(ReadOnlySpan<byte> key)
     {
-        if (_isDisposing)
-        {
-            throw new ObjectDisposedException($"Attempted to read form a disposed database {Name}");
-        }
+        return KeyExistsWithColumn(key, null);
+    }
+
+    protected internal bool KeyExistsWithColumn(ReadOnlySpan<byte> key, ColumnFamilyHandle? cf)
+    {
+        ObjectDisposedException.ThrowIf(_isDisposing, this);
 
         try
         {
-            // seems it has no performance impact
-            return _db.Get(key) is not null;
-            // return _db.Get(key, 32, _keyExistsBuffer, 0, 0, null, null) != -1;
+            return _db.HasKey(key, cf, _defaultReadOptions);
         }
         catch (RocksDbSharpException e)
         {
@@ -765,39 +1023,64 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         }
     }
 
-    public IBatch StartBatch()
+    public IWriteBatch StartWriteBatch()
     {
-        IBatch batch = new RocksDbBatch(this);
-        _currentBatches.Add(batch);
-        return batch;
+        IWriteBatch writeBatch = new RocksDbWriteBatch(this);
+        _currentBatches.Add(writeBatch);
+        return writeBatch;
     }
 
-    internal class RocksDbBatch : IBatch
+    internal class RocksDbWriteBatch : IWriteBatch
     {
         private readonly DbOnTheRocks _dbOnTheRocks;
+        private WriteBatch _rocksBatch;
         private WriteFlags _writeFlags = WriteFlags.None;
         private bool _isDisposed;
 
-        internal readonly WriteBatch _rocksBatch;
+        [ThreadStatic]
+        private static WriteBatch? _reusableWriteBatch;
 
-        public RocksDbBatch(DbOnTheRocks dbOnTheRocks)
+        /// <summary>
+        /// Because of how rocksdb parallelize writes, a large write batch can stall other new concurrent writes, so
+        /// we writes the batch in smaller batches. This removes atomicity so its only turned on when NoWAL flag is on.
+        /// It does not work as well as just turning on unordered_write, but Snapshot and Iterator can still works.
+        /// </summary>
+        private const int MaxWritesOnNoWal = 256;
+        private int _writeCount;
+
+        public RocksDbWriteBatch(DbOnTheRocks dbOnTheRocks)
         {
             _dbOnTheRocks = dbOnTheRocks;
+            _rocksBatch = CreateWriteBatch();
 
-            if (_dbOnTheRocks._isDisposing)
+            ObjectDisposedException.ThrowIf(_dbOnTheRocks._isDisposing, _dbOnTheRocks);
+        }
+
+        private static WriteBatch CreateWriteBatch()
+        {
+            if (_reusableWriteBatch is null) return new WriteBatch();
+
+            WriteBatch batch = _reusableWriteBatch;
+            _reusableWriteBatch = null;
+            return batch;
+        }
+
+        private static void ReturnWriteBatch(WriteBatch batch)
+        {
+            Native.Instance.rocksdb_writebatch_data(batch.Handle, out UIntPtr size);
+            if (size > (uint)16.KiB() || _reusableWriteBatch is not null)
             {
-                throw new ObjectDisposedException($"Attempted to create a batch on a disposed database {_dbOnTheRocks.Name}");
+                batch.Dispose();
+                return;
             }
 
-            _rocksBatch = new WriteBatch();
+            batch.Clear();
+            _reusableWriteBatch = batch;
         }
 
         public void Dispose()
         {
-            if (_dbOnTheRocks._isDisposed)
-            {
-                throw new ObjectDisposedException($"Attempted to commit a batch on a disposed database {_dbOnTheRocks.Name}");
-            }
+            ObjectDisposedException.ThrowIf(_dbOnTheRocks._isDisposed, _dbOnTheRocks);
 
             if (_isDisposed)
             {
@@ -808,8 +1091,9 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
             try
             {
                 _dbOnTheRocks._db.Write(_rocksBatch, _dbOnTheRocks.WriteFlagsToWriteOptions(_writeFlags));
+
                 _dbOnTheRocks._currentBatches.TryRemove(this);
-                _rocksBatch.Dispose();
+                ReturnWriteBatch(_rocksBatch);
             }
             catch (RocksDbSharpException e)
             {
@@ -818,47 +1102,81 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
             }
         }
 
-        public byte[]? Get(ReadOnlySpan<byte> key, ReadFlags flags = ReadFlags.None)
+        public void Delete(ReadOnlySpan<byte> key, ColumnFamilyHandle? cf = null)
         {
-            // Not checking _isDisposing here as for some reason, sometimes is is read after dispose
-            return _dbOnTheRocks.Get(key, flags);
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            _rocksBatch.Delete(key, cf);
+        }
+
+        public void Set(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, ColumnFamilyHandle? cf = null, WriteFlags flags = WriteFlags.None)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (value.IsNull())
+            {
+                _rocksBatch.Delete(key, cf);
+            }
+            else
+            {
+                _rocksBatch.Put(key, value, cf);
+            }
+            _writeFlags = flags;
+
+            if ((flags & WriteFlags.DisableWAL) != 0) FlushOnTooManyWrites();
         }
 
         public void Set(ReadOnlySpan<byte> key, byte[]? value, WriteFlags flags = WriteFlags.None)
         {
-            if (_isDisposed)
-            {
-                throw new ObjectDisposedException($"Attempted to write a disposed batch {_dbOnTheRocks.Name}");
-            }
-
-            if (value is null)
-            {
-                _rocksBatch.Delete(key);
-            }
-            else
-            {
-                _rocksBatch.Put(key, value);
-            }
-
-            _writeFlags = flags;
+            Set(key, value, null, flags);
         }
-    }
 
-    public void Flush()
-    {
-        if (_isDisposing)
+        public void PutSpan(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, WriteFlags flags = WriteFlags.None)
         {
-            throw new ObjectDisposedException($"Attempted to flush a disposed database {Name}");
+            Set(key, value, null, flags);
         }
 
-        InnerFlush();
+        private void FlushOnTooManyWrites()
+        {
+            if (Interlocked.Increment(ref _writeCount) % MaxWritesOnNoWal != 0) return;
+
+            WriteBatch currentBatch = Interlocked.Exchange(ref _rocksBatch, CreateWriteBatch());
+
+            try
+            {
+                _dbOnTheRocks._db.Write(currentBatch, _dbOnTheRocks.WriteFlagsToWriteOptions(_writeFlags));
+                ReturnWriteBatch(currentBatch);
+            }
+            catch (RocksDbSharpException e)
+            {
+                _dbOnTheRocks.CreateMarkerIfCorrupt(e);
+                throw;
+            }
+        }
     }
 
-    private void InnerFlush()
+    public void Flush(bool onlyWal = false)
+    {
+        ObjectDisposedException.ThrowIf(_isDisposing, this);
+
+        InnerFlush(onlyWal);
+    }
+
+    public virtual void Compact()
+    {
+        _db.CompactRange(Keccak.Zero.BytesToArray(), Keccak.MaxValue.BytesToArray());
+    }
+
+    private void InnerFlush(bool onlyWal)
     {
         try
         {
-            RocksDbSharp.Native.Instance.rocksdb_flush(_db.Handle, FlushOptions.DefaultFlushOptions.Handle);
+            _rocksDbNative.rocksdb_flush_wal(_db.Handle, true);
+
+            if (!onlyWal)
+            {
+                _rocksDbNative.rocksdb_flush(_db.Handle, FlushOptions.DefaultFlushOptions.Handle);
+            }
         }
         catch (RocksDbSharpException e)
         {
@@ -924,23 +1242,17 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
     {
         // ReSharper disable once ConstantConditionalAccessQualifier
         // running in finalizer, potentially not fully constructed
-        foreach (IBatch batch in _currentBatches)
+        foreach (IWriteBatch batch in _currentBatches)
         {
             batch.Dispose();
         }
 
-        _readaheadIterators.DisposeAll();
-
+        _iteratorManager.Dispose();
         _db.Dispose();
 
-        if (_cache.HasValue)
+        if (_rowCache.HasValue)
         {
-            _rocksDbNative.rocksdb_cache_destroy(_cache.Value);
-        }
-
-        if (_rateLimiter.HasValue)
-        {
-            _rocksDbNative.rocksdb_ratelimiter_destroy(_rateLimiter.Value);
+            _rocksDbNative.rocksdb_cache_destroy(_rowCache.Value);
         }
     }
 
@@ -951,12 +1263,12 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
 
         if (_logger.IsInfo) _logger.Info($"Disposing DB {Name}");
 
-        foreach (DbMetricsUpdater dbMetricsUpdater in _metricsUpdaters)
+        foreach (IDisposable dbMetricsUpdater in _metricsUpdaters)
         {
             dbMetricsUpdater.Dispose();
         }
 
-        InnerFlush();
+        InnerFlush(false);
         ReleaseUnmanagedResources();
 
         _dbsByPath.Remove(_fullPath!, out _);
@@ -987,42 +1299,43 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         {
             // Depending on tune type, allow num of L0 files to grow causing compaction to occur in larger size. This
             // reduces write amplification at the expense of read response time and amplification while the tune is
-            // active. Additionally, the larger compaction causes larger spikes of IO. User may not want to enable this
-            // if they plan to run a validator node while the node is still syncing, or run another node on the same
-            // machine. Specifying a rate limit smoothens this spike somewhat by not blocking writes while allowing
-            // compaction to happen in background at 1/10th the specified speed (if rate limited).
+            // active. Additionally, the larger compaction causes larger spikes of IO, larger memory usage, and may temporarily
+            // use up large amount of disk space. User may not want to enable this if they plan to run a validator node
+            // while the node is still syncing, or run another node on the same machine. Specifying a rate limit
+            // smoothens this spike somewhat by not blocking writes while allowing compaction to happen in background
+            // at 1/10th the specified speed (if rate limited).
             //
-            // Read and writes written on different tune during mainnet sync in TB. StateSync omitted but included in total:
-            // +-----------------------------+--------------+--------------+---------------+--------------+
-            // | L0FileNumTarget             |  Total (R/W) |     SnapSync |     OldBodies |  OldReceipts |
-            // +-----------------------------+--------------+--------------+---------------+--------------+
-            // | 4 (Default)                 |  25.9 / 13.5 |  4.63 / 3.84 |   8.21 / 4.54 |  9.27 / 5.06 |
-            // | 64 (WriteBias)              |  22.6 / 10.8 |  5.52 / 2.56 |   6.54 / 4.00 |  7.17 / 4.19 |
-            // | 256 (HeavyWrite)            |  38.7 /  8.3 |  8.50 / 1.89 |   6.76 / 3.20 |  7.39 / 3.20 |
-            // | 512                         |  36.5 /  7.5 |  12.0 / 1.65 |   5.78 / 2.84 |  6.08 / 2.79 |
-            // | 1024 (AggressiveHeavyWrite) |  35.1 /  6.2 |  19.4 / 1.30 |   5.19 / 2.47 |  5.77 / 2.40 |
-            // | DisableCompaction           |  94.1 /  3.5 |  30.4 / 0.75 |  56.50 / 1.33 |  6.97 / 1.53 |
-            // +-----------------------------+--------------+--------------+---------------+--------------+
+            // Total writes written on different tune during mainnet sync in TB.
+            // +-----------------------+-------+-------+-------+-------+-------+---------+
+            // | L0FileNumTarget       | Total | State | Code  | Header| Blocks| Receipts |
+            // +-----------------------+-------+-------+-------+-------+-------+---------+
+            // | Default               | 5.055 | 2.27  | 0.242 | 0.123 | 1.14  | 1.280   |
+            // | WriteBias             | 4.962 | 2.12  | 0.049 | 0.132 | 1.14  | 1.080   |
+            // | HeavyWrite            | 3.592 | 1.32  | 0.032 | 0.116 | 1.14  | 0.984   |
+            // | AggressiveHeavyWrite  | 3.029 | 0.92  | 0.024 | 0.118 | 1.14  | 0.827   |
+            // | DisableCompaction     | 2.215 | 0.36  | 0.031 | 0.137 | 1.14  | 0.547   |
+            // +-----------------------+-------+-------+-------+-------+-------+---------+
             // Note, in practice on my machine, the reads does not reach the SSD. Read measured from SSD is much lower
             // than read measured from process. It is likely that most files are cached as I have 128GB of RAM.
             // Also notice that the heavier the tune, the higher the reads.
             case ITunableDb.TuneType.WriteBias:
-                // The default l1SizeTarget is 256MB, so the compaction is fairly light. But the default options is not very
-                // efficient for write amplification to conserve memory, so the write amplification reduction is noticeable.
-                // Does not seems to impact sync performance, might improve sync time slightly if user is IO limited.
-                ApplyOptions(GetHeavyWriteOptions(64));
+                // Keep the same l1 size but apply other adjustment which should increase buffer number and make
+                // l0 the same size as l1, but keep the LSM the same. This improve flush parallelization, and
+                // write amplification due to mismatch of l0 and l1 size, but does not reduce compaction from other
+                // levels.
+                ApplyOptions(GetHeavyWriteOptions(_maxBytesForLevelBase));
                 break;
             case ITunableDb.TuneType.HeavyWrite:
                 // Compaction spikes are clear at this point. Will definitely affect attestation performance.
                 // Its unclear if it improve or slow down sync time. Seems to be the sweet spot.
-                ApplyOptions(GetHeavyWriteOptions(256));
+                ApplyOptions(GetHeavyWriteOptions((ulong)2.GiB()));
                 break;
             case ITunableDb.TuneType.AggressiveHeavyWrite:
                 // For when, you are desperate, but don't wanna disable compaction completely, because you don't want
                 // peers to drop. Tend to be faster than disabling compaction completely, except if your ratelimit
                 // is a bit low and your compaction is lagging behind, which will trigger slowdown, so sync will hang
                 // intermittently, but at least peer count is stable.
-                ApplyOptions(GetHeavyWriteOptions(1024));
+                ApplyOptions(GetHeavyWriteOptions((ulong)16.GiB()));
                 break;
             case ITunableDb.TuneType.DisableCompaction:
                 // Completely disable compaction. On mainnet, max num of l0 files for state seems to be about 10800.
@@ -1043,9 +1356,13 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
                 // user config may not be able to handle this.
                 // With all those cons, this result in the minimum write amplification possible via tweaking compaction
                 // without changing memory budget. Not recommended for mainnet, unless you are very desperate.
-                IDictionary<string, string> heavyWriteOption = GetHeavyWriteOptions(2048);
-                heavyWriteOption["disable_auto_compactions"] = "true";
-                ApplyOptions(heavyWriteOption);
+                ApplyOptions(GetDisableCompactionOptions());
+                break;
+            case ITunableDb.TuneType.EnableBlobFiles:
+                ApplyOptions(GetBlobFilesOptions());
+                break;
+            case ITunableDb.TuneType.HashDb:
+                ApplyOptions(GetHashDbOptions());
                 break;
             case ITunableDb.TuneType.Default:
             default:
@@ -1066,15 +1383,39 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         // Defaults are from rocksdb source code
         return new Dictionary<string, string>()
         {
+            { "write_buffer_size", _writeBufferSize.ToString() },
+            { "max_write_buffer_number", _maxWriteBufferNumber.ToString() },
+
             { "level0_file_num_compaction_trigger", 4.ToString() },
             { "level0_slowdown_writes_trigger", 20.ToString() },
-            { "level0_stop_writes_trigger", 36.ToString() },
 
-            { "max_bytes_for_level_base", 256.MiB().ToString() },
+            // Very high, so that after moving from HeavyWrite, we don't immediately hang.
+            // This does means that under very rare case, the l0 file can accumulate, which slow down the db
+            // until they get compacted.
+            { "level0_stop_writes_trigger", 1024.ToString() },
+
+            { "max_bytes_for_level_base", _maxBytesForLevelBase.ToString() },
+            { "target_file_size_base", _targetFileSizeBase.ToString() },
             { "disable_auto_compactions", "false" },
+
+            { "enable_blob_files", "false" },
 
             { "soft_pending_compaction_bytes_limit", 64.GiB().ToString() },
             { "hard_pending_compaction_bytes_limit", 256.GiB().ToString() },
+        };
+    }
+
+    private IDictionary<string, string> GetHashDbOptions()
+    {
+        return new Dictionary<string, string>()
+        {
+            // Some database config is slightly faster on hash db database. These are applied when hash db is detected
+            // to prevent unexpected regression.
+            { "table_factory.block_size", "4096" },
+            { "table_factory.block_restart_interval", "16" },
+            { "compression", "kSnappyCompression" },
+            { "max_bytes_for_level_multiplier", "10" },
+            { "max_bytes_for_level_base", "256000000" },
         };
     }
 
@@ -1089,19 +1430,31 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
     ///  This caps the maximum allowed number of l0 files, which is also the read response time amplification.
     /// </param>
     /// <returns></returns>
-    private IDictionary<string, string> GetHeavyWriteOptions(ulong l0FileNumTarget)
+    private IDictionary<string, string> GetHeavyWriteOptions(ulong l0SizeTarget)
     {
+        // Make buffer (probably) smaller so that it does not take too much memory to have many of them.
+        // More buffer means more parallel flush, but each read have to go through all buffer one by one much like l0
+        // but no io, only cpu.
+        // bufferSize*maxBufferNumber = 16MB*Core count, which is the max memory used, which tend to be the case as its now
+        // stalled by compaction instead of flush.
+        // The buffer is not compressed unlike l0File, so to account for it, its size need to be slightly larger.
+        ulong targetFileSize = (ulong)16.MiB();
+        ulong bufferSize = (ulong)(targetFileSize / _perTableDbConfig.CompressibilityHint);
+        ulong l0FileSize = targetFileSize * (ulong)_minWriteBufferToMerge;
+        ulong maxBufferNumber = (ulong)Environment.ProcessorCount;
+
         // Guide recommend to have l0 and l1 to be the same size. They have to be compacted together so if l1 is larger,
         // the extra size in l1 is basically extra rewrites. If l0 is larger... then I don't know why not. Even so, it seems to
         // always get triggered when l0 size exceed max_bytes_for_level_base even if file num is less than l0FileNumTarget.
-        // The 2 here is MinWriteBufferToMerge. Note, that this does highly depends on the WriteBufferSize as do standard
-        // config.
-        ulong l1SizeTarget = l0FileNumTarget * _perTableDbConfig.WriteBufferSize * 2;
+        ulong l0FileNumTarget = l0SizeTarget / l0FileSize;
+        ulong l1SizeTarget = l0SizeTarget;
 
         return new Dictionary<string, string>()
         {
-            { "max_bytes_for_level_base", l1SizeTarget.ToString() },
+            { "write_buffer_size", bufferSize.ToString() },
+            { "max_write_buffer_number", maxBufferNumber.ToString() },
 
+            { "max_bytes_for_level_base", l1SizeTarget.ToString() },
             { "level0_file_num_compaction_trigger", l0FileNumTarget.ToString() },
 
             // Note: If ratelimiter is not specified and if delayed_write_rate is not specified, the default is 16MBps.
@@ -1115,29 +1468,198 @@ public class DbOnTheRocks : IDbWithSpan, ITunableDb
         };
     }
 
-    // Note: use of threadlocal is very important as the seek forward is fast, but the seek backward is not fast.
-    internal sealed class ManagedIterators : ThreadLocal<Iterator>
+    private IDictionary<string, string> GetDisableCompactionOptions()
     {
-        public ManagedIterators() : base(trackAllValues: true)
+        IDictionary<string, string> heavyWriteOption = GetHeavyWriteOptions((ulong)32.GiB());
+
+        heavyWriteOption["disable_auto_compactions"] = "true";
+        // Increase the size of the write buffer, which reduces the number of l0 file by 4x. This does slows down
+        // the memtable a little bit. So if you are not write limited, you'll get memtable limited instead.
+        // This does increase the total memory buffer size, but counterintuitively, this reduces overall memory usage
+        // as it ran out of bloom filter cache so it need to do actual IO.
+        heavyWriteOption["write_buffer_size"] = 64.MiB().ToString();
+
+        return heavyWriteOption;
+    }
+
+
+    private static IDictionary<string, string> GetBlobFilesOptions()
+    {
+        // Enable blob files, see: https://rocksdb.org/blog/2021/05/26/integrated-blob-db.html
+        // This is very useful for blocks, as it almost eliminate 95% of the compaction as the main db no longer
+        // store the actual data, but only points to blob files. This config reduces total blocks db writes from about
+        // 4.6 TB to 0.76 TB, where even the the WAL took 0.45 TB (wal is not compressed), with peak writes of about 300MBps,
+        // it may not even saturate a SATA SSD on a 1GBps internet.
+
+        // You don't want to turn this on on other DB as it does add an indirection which take up an additional iop.
+        // But for large values like blocks (3MB decompressed to 8MB), the response time increase is negligible.
+        // However without a large buffer size, it will create tens of thousands of small files. There are
+        // various workaround it, but it all increase total writes, which defeats the purpose.
+        // Additionally, as the `max_bytes_for_level_base` is set to very low, existing user will suddenly
+        // get a lot of compaction. So cant turn this on all the time. Turning this back off, will just put back
+        // new data to SST files.
+
+        return new Dictionary<string, string>()
         {
+            { "enable_blob_files", "true" },
+            { "blob_compression_type", "kSnappyCompression" },
+
+            // Make file size big, so we have less of them.
+            { "write_buffer_size", 256.MiB().ToString() },
+            // Current memtable + 2 concurrent writes. Can't have too many of these as it take up RAM.
+            { "max_write_buffer_number", 3.ToString() },
+
+            // These two are SST files instead of the blobs, which are now much smaller.
+            { "max_bytes_for_level_base", 4.MiB().ToString() },
+            { "target_file_size_base", 1.MiB().ToString() },
+        };
+    }
+
+    /// <summary>
+    /// Iterators should not be kept for long as it will pin some memory block and sst file. This would show up as
+    /// temporary higher disk usage or memory usage.
+    ///
+    /// This class handles a periodic timer which periodically dispose all iterator.
+    /// </summary>
+    internal class IteratorManager : IDisposable
+    {
+        private readonly ManagedIterators _readaheadIterators = new();
+        private readonly ManagedIterators _readaheadIterators2 = new();
+        private readonly ManagedIterators _readaheadIterators3 = new();
+        private readonly RocksDb _rocksDb;
+        private readonly ColumnFamilyHandle? _cf;
+        private readonly ReadOptions? _readOptions;
+        private readonly Timer _timer;
+
+        // This is about once every two second maybe at max throughput.
+        private const int IteratorUsageLimit = 1000000;
+
+        public IteratorManager(RocksDb rocksDb, ColumnFamilyHandle? cf, ReadOptions? readOptions)
+        {
+            _rocksDb = rocksDb;
+            _cf = cf;
+            _readOptions = readOptions;
+
+            _timer = new Timer(OnTimer, null, TimeSpan.Zero, TimeSpan.FromSeconds(10));
         }
 
-        public void DisposeAll()
+        private void OnTimer(object? state)
         {
-            foreach (Iterator iterator in Values)
+            _readaheadIterators.ClearIterators();
+            _readaheadIterators2.ClearIterators();
+            _readaheadIterators3.ClearIterators();
+        }
+
+        public void Dispose()
+        {
+            _timer.Dispose();
+            _readaheadIterators.DisposeAll();
+            _readaheadIterators2.DisposeAll();
+            _readaheadIterators3.DisposeAll();
+        }
+
+        public RentWrapper Rent(ReadFlags flags)
+        {
+
+            ManagedIterators iterators = _readaheadIterators;
+            if ((flags & ReadFlags.HintReadAhead2) != 0)
             {
-                iterator.Dispose();
+                iterators = _readaheadIterators2;
+            }
+            else if ((flags & ReadFlags.HintReadAhead3) != 0)
+            {
+                iterators = _readaheadIterators3;
             }
 
-            Dispose();
+            IteratorHolder holder = iterators.Value!;
+            // If null, we create a new one.
+            Iterator? iterator = Interlocked.Exchange(ref holder.Iterator, null);
+            return new RentWrapper(iterator ?? _rocksDb.NewIterator(_cf, _readOptions), flags, this);
         }
 
-        protected override void Dispose(bool disposing)
+        private void Return(Iterator iterator, ReadFlags flags)
         {
-            // Note: This is called from finalizer thread, so we can't use foreach to dispose all values
-            Value?.Dispose();
-            Value = null!;
-            base.Dispose(disposing);
+            ManagedIterators iterators = _readaheadIterators;
+            if ((flags & ReadFlags.HintReadAhead2) != 0)
+            {
+                iterators = _readaheadIterators2;
+            }
+            else if ((flags & ReadFlags.HintReadAhead3) != 0)
+            {
+                iterators = _readaheadIterators3;
+            }
+
+            IteratorHolder holder = iterators.Value!;
+
+            // We don't keep using the same iterator for too long.
+            if (holder.Usage > IteratorUsageLimit)
+            {
+                iterator.Dispose();
+                holder.Usage = 0;
+                return;
+            }
+
+            holder.Usage++;
+
+            Iterator? oldIterator = Interlocked.Exchange(ref holder.Iterator, iterator);
+            // Well... this is weird. I'll just dispose it.
+            oldIterator?.Dispose();
+        }
+
+        public readonly struct RentWrapper(Iterator iterator, ReadFlags flags, IteratorManager manager) : IDisposable
+        {
+            public Iterator Iterator => iterator;
+
+            public void Dispose()
+            {
+                manager.Return(iterator, flags);
+            }
+        }
+
+        // Note: use of threadlocal is very important as the seek forward is fast, but the seek backward is not fast.
+        private sealed class ManagedIterators : ThreadLocal<IteratorHolder>
+        {
+            private bool _disposed = false;
+
+            public ManagedIterators() : base(static () => new IteratorHolder(), trackAllValues: true)
+            {
+            }
+
+            public void ClearIterators()
+            {
+                if (_disposed) return;
+
+                foreach (IteratorHolder iterator in Values)
+                {
+                    iterator.Dispose();
+                }
+            }
+
+            public void DisposeAll()
+            {
+                ClearIterators();
+                Dispose();
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                // Note: This is called from finalizer thread, so we can't use foreach to dispose all values
+                Value?.Dispose();
+                Value = null!;
+                _disposed = true;
+                base.Dispose(disposing);
+            }
+        }
+
+        private class IteratorHolder : IDisposable
+        {
+            public Iterator? Iterator = null;
+            public int Usage = 0;
+
+            public void Dispose()
+            {
+                Interlocked.Exchange(ref Iterator, null)?.Dispose();
+            }
         }
     }
 }

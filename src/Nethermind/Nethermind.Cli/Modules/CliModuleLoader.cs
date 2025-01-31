@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using Jint.Native;
 using Jint.Native.Object;
@@ -45,10 +46,7 @@ namespace Nethermind.Cli.Modules
         /// <exception cref="ArgumentNullException"></exception>
         private static Delegate CreateDelegate(MethodInfo methodInfo, CliModuleBase module)
         {
-            if (methodInfo is null)
-            {
-                throw new ArgumentNullException(nameof(methodInfo));
-            }
+            ArgumentNullException.ThrowIfNull(methodInfo);
 
             ParameterInfo[] parameterInfos = methodInfo.GetParameters();
             Type[] types = new Type[parameterInfos.Length + 1];
@@ -68,7 +66,7 @@ namespace Nethermind.Cli.Modules
             if (cliModuleAttribute is null)
             {
                 _cliConsole.WriteErrorLine(
-                    $"Could not load module {module.GetType().Name} bacause of a missing {nameof(CliModuleAttribute)}.");
+                    $"Could not load module {module.GetType().Name} because of a missing {nameof(CliModuleAttribute)}.");
                 return;
             }
 
@@ -77,7 +75,7 @@ namespace Nethermind.Cli.Modules
             MethodsByModules[cliModuleAttribute.ModuleName] = new List<string>();
 
             var methods = module.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
-            foreach (MethodInfo methodInfo in methods.OrderBy(m => m.Name))
+            foreach (MethodInfo methodInfo in methods.OrderBy(static m => m.Name))
             {
                 var cliProperty = methodInfo.GetCustomAttribute<CliPropertyAttribute>();
                 var cliFunction = methodInfo.GetCustomAttribute<CliFunctionAttribute>();
@@ -92,16 +90,14 @@ namespace Nethermind.Cli.Modules
                     throw new InvalidDataException($"Method {methodInfo.Name} of {module.GetType().Name} should be decorated with one of {nameof(CliPropertyAttribute)} or {nameof(CliFunctionAttribute)}");
                 }
 
-                ObjectInstance instance;
-                if (!_objects.ContainsKey(objectName))
+                ref ObjectInstance? instance = ref CollectionsMarshal.GetValueRefOrAddDefault(_objects, objectName, out bool exists);
+                if (!exists)
                 {
                     instance = _engine.JintEngine.Object.Construct(Arguments.Empty);
                     _engine.JintEngine.SetValue(objectName, instance);
-                    _objects[objectName] = instance;
                 }
 
-                instance = _objects[objectName];
-                var @delegate = CreateDelegate(methodInfo, module);
+                Delegate @delegate = CreateDelegate(methodInfo, module);
                 DelegateWrapper nativeDelegate = new DelegateWrapper(_engine.JintEngine, @delegate);
 
                 if (itemName is not null)
@@ -112,15 +108,15 @@ namespace Nethermind.Cli.Modules
                         _cliConsole.WriteLine($".{itemName}");
 
                         MethodsByModules[objectName].Add(itemName);
-                        AddProperty(instance, itemName, nativeDelegate);
+                        AddProperty(instance!, itemName, nativeDelegate);
                     }
                     else
                     {
                         _cliConsole.WriteKeyword($"  {objectName}");
-                        _cliConsole.WriteLine($".{itemName}({string.Join(", ", methodInfo.GetParameters().Select(p => p.Name))})");
+                        _cliConsole.WriteLine($".{itemName}({string.Join(", ", methodInfo.GetParameters().Select(static p => p.Name))})");
 
                         MethodsByModules[objectName].Add(itemName + "(");
-                        AddMethod(instance, itemName, nativeDelegate);
+                        AddMethod(instance!, itemName, nativeDelegate);
                     }
                 }
             }
@@ -217,7 +213,7 @@ namespace Nethermind.Cli.Modules
             }
         }
 
-        private Dictionary<string, ObjectInstance> _objects = new Dictionary<string, ObjectInstance>();
+        private readonly Dictionary<string, ObjectInstance> _objects = new Dictionary<string, ObjectInstance>();
 
         private static void AddMethod(ObjectInstance instance, string name, DelegateWrapper delegateWrapper)
         {

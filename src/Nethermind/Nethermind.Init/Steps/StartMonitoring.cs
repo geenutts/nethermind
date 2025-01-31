@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
-using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -45,7 +44,7 @@ public class StartMonitoring : IStep
             PrepareProductInfoMetrics();
             controller = new(_metricsConfig);
 
-            IEnumerable<Type> metrics = TypeDiscovery.FindNethermindTypes(nameof(Metrics));
+            IEnumerable<Type> metrics = TypeDiscovery.FindNethermindBasedTypes(nameof(Metrics));
             foreach (Type metric in metrics)
             {
                 controller.RegisterMetrics(metric);
@@ -54,17 +53,17 @@ public class StartMonitoring : IStep
 
         if (_metricsConfig.Enabled)
         {
-            _api.MonitoringService = new MonitoringService(controller, _metricsConfig, _api.LogManager);
+            IMonitoringService monitoringService = _api.MonitoringService = new MonitoringService(controller, _metricsConfig, _api.LogManager);
 
-            await _api.MonitoringService.StartAsync().ContinueWith(x =>
+            SetupMetrics(monitoringService);
+
+            await monitoringService.StartAsync().ContinueWith(x =>
             {
                 if (x.IsFaulted && _logger.IsError)
                     _logger.Error("Error during starting a monitoring.", x.Exception);
             }, cancellationToken);
 
-            SetupMetrics();
-
-            _api.DisposeStack.Push(new Reactive.AnonymousDisposable(() => _api.MonitoringService.StopAsync())); // do not await
+            _api.DisposeStack.Push(new Reactive.AnonymousDisposable(() => monitoringService.StopAsync())); // do not await
         }
         else
         {
@@ -80,11 +79,11 @@ public class StartMonitoring : IStep
         }
     }
 
-    private void SetupMetrics()
+    private void SetupMetrics(IMonitoringService monitoringService)
     {
         if (_metricsConfig.EnableDbSizeMetrics)
         {
-            _api.MonitoringService.AddMetricsUpdateAction(() =>
+            monitoringService.AddMetricsUpdateAction(() =>
             {
                 IDbProvider? dbProvider = _api.DbProvider;
                 if (dbProvider is null)
@@ -92,58 +91,21 @@ public class StartMonitoring : IStep
                     return;
                 }
 
-                Db.Metrics.StateDbSize = dbProvider.StateDb.GetSize();
-                Db.Metrics.ReceiptsDbSize = dbProvider.ReceiptsDb.GetSize();
-                Db.Metrics.HeadersDbSize = dbProvider.HeadersDb.GetSize();
-                Db.Metrics.BlocksDbSize = dbProvider.BlocksDb.GetSize();
-                Db.Metrics.BloomDbSize = dbProvider.BloomDb.GetSize();
-                Db.Metrics.CodeDbSize = dbProvider.CodeDb.GetSize();
-                Db.Metrics.BlockInfosDbSize = dbProvider.BlockInfosDb.GetSize();
-                Db.Metrics.ChtDbSize = dbProvider.ChtDb.GetSize();
-                Db.Metrics.MetadataDbSize = dbProvider.MetadataDb.GetSize();
-                Db.Metrics.WitnessDbSize = dbProvider.WitnessDb.GetSize();
-
-                Db.Metrics.DbBlockCacheMemorySize = dbProvider.StateDb.GetCacheSize()
-                                                    + dbProvider.BlockInfosDb.GetCacheSize()
-                                                    + dbProvider.HeadersDb.GetCacheSize()
-                                                    + dbProvider.BlocksDb.GetCacheSize()
-                                                    + dbProvider.ReceiptsDb.GetCacheSize();
-                // Share same cache with StateDb
-                // + dbProvider.ChtDb.GetCacheSize()
-                // + dbProvider.MetadataDb.GetCacheSize()
-                // + dbProvider.WitnessDb.GetCacheSize()
-                // + dbProvider.CodeDb.GetCacheSize()
-                // + dbProvider.BloomDb.GetCacheSize()
-
-                Db.Metrics.DbIndexFilterMemorySize = dbProvider.StateDb.GetIndexSize()
-                                                    + dbProvider.ReceiptsDb.GetIndexSize()
-                                                    + dbProvider.HeadersDb.GetIndexSize()
-                                                    + dbProvider.BlocksDb.GetIndexSize()
-                                                    + dbProvider.BloomDb.GetIndexSize()
-                                                    + dbProvider.CodeDb.GetIndexSize()
-                                                    + dbProvider.BlockInfosDb.GetIndexSize()
-                                                    + dbProvider.ChtDb.GetIndexSize()
-                                                    + dbProvider.MetadataDb.GetIndexSize()
-                                                    + dbProvider.WitnessDb.GetIndexSize();
-
-                Db.Metrics.DbMemtableMemorySize = dbProvider.StateDb.GetMemtableSize()
-                                                    + dbProvider.ReceiptsDb.GetMemtableSize()
-                                                    + dbProvider.HeadersDb.GetMemtableSize()
-                                                    + dbProvider.BlocksDb.GetMemtableSize()
-                                                    + dbProvider.BloomDb.GetMemtableSize()
-                                                    + dbProvider.CodeDb.GetMemtableSize()
-                                                    + dbProvider.BlockInfosDb.GetMemtableSize()
-                                                    + dbProvider.ChtDb.GetMemtableSize()
-                                                    + dbProvider.MetadataDb.GetMemtableSize()
-                                                    + dbProvider.WitnessDb.GetMemtableSize();
-
-                Db.Metrics.DbTotalMemorySize = Db.Metrics.DbBlockCacheMemorySize
-                                                + Db.Metrics.DbIndexFilterMemorySize
-                                                + Db.Metrics.DbMemtableMemorySize;
+                foreach (KeyValuePair<string, IDbMeta> kv in dbProvider.GetAllDbMeta())
+                {
+                    // Note: At the moment, the metric for a columns db is combined across column.
+                    IDbMeta.DbMetric dbMetric = kv.Value.GatherMetric(includeSharedCache: kv.Key == DbNames.State); // Only include shared cache if state db
+                    Db.Metrics.DbSize[kv.Key] = dbMetric.Size;
+                    Db.Metrics.DbBlockCacheSize[kv.Key] = dbMetric.CacheSize;
+                    Db.Metrics.DbMemtableSize[kv.Key] = dbMetric.MemtableSize;
+                    Db.Metrics.DbIndexFilterSize[kv.Key] = dbMetric.IndexSize;
+                    Db.Metrics.DbReads[kv.Key] = dbMetric.TotalReads;
+                    Db.Metrics.DbWrites[kv.Key] = dbMetric.TotalWrites;
+                }
             });
         }
 
-        _api.MonitoringService.AddMetricsUpdateAction(() =>
+        monitoringService.AddMetricsUpdateAction(() =>
         {
             Synchronization.Metrics.SyncTime = (long?)_api.EthSyncingInfo?.UpdateAndGetSyncTime().TotalSeconds ?? 0;
         });

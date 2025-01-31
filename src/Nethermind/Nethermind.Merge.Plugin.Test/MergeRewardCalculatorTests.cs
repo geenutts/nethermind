@@ -10,6 +10,7 @@ using Nethermind.Db;
 using Nethermind.Logging;
 using Nethermind.Merge.Plugin.Handlers;
 using Nethermind.Specs;
+using Nethermind.Specs.ChainSpecStyle;
 using Nethermind.Specs.Forks;
 using NSubstitute;
 using NUnit.Framework;
@@ -28,7 +29,7 @@ namespace Nethermind.Merge.Plugin.Test
 
             PoSSwitcher poSSwitcher = CreatePosSwitcher();
             poSSwitcher.TryUpdateTerminalBlock(block.Header);
-            MergeRewardCalculator calculator = new(new RewardCalculator(RopstenSpecProvider.Instance), poSSwitcher);
+            MergeRewardCalculator calculator = new(new RewardCalculator(MainnetSpecProvider.Instance), poSSwitcher);
             BlockReward[] rewards = calculator.CalculateRewards(block);
 
             Assert.That(rewards.Length, Is.EqualTo(3));
@@ -51,7 +52,7 @@ namespace Nethermind.Merge.Plugin.Test
             PoSSwitcher poSSwitcher = CreatePosSwitcher();
             poSSwitcher.TryUpdateTerminalBlock(block.Header);
 
-            MergeRewardCalculator calculator = new(new RewardCalculator(RopstenSpecProvider.Instance), poSSwitcher);
+            MergeRewardCalculator calculator = new(new RewardCalculator(MainnetSpecProvider.Instance), poSSwitcher);
             BlockReward[] rewards = calculator.CalculateRewards(block);
 
             Assert.That(rewards.Length, Is.EqualTo(2));
@@ -71,7 +72,7 @@ namespace Nethermind.Merge.Plugin.Test
             PoSSwitcher poSSwitcher = CreatePosSwitcher();
             poSSwitcher.TryUpdateTerminalBlock(block.Header);
 
-            MergeRewardCalculator calculator = new(new RewardCalculator(RopstenSpecProvider.Instance), poSSwitcher);
+            MergeRewardCalculator calculator = new(new RewardCalculator(MainnetSpecProvider.Instance), poSSwitcher);
             BlockReward[] rewards = calculator.CalculateRewards(block);
 
             Assert.That(rewards.Length, Is.EqualTo(1));
@@ -84,7 +85,7 @@ namespace Nethermind.Merge.Plugin.Test
         [Test]
         public void Byzantium_reward_two_uncles()
         {
-            long blockNumber = RopstenSpecProvider.ByzantiumBlockNumber;
+            long blockNumber = MainnetSpecProvider.ByzantiumBlockNumber;
             Block uncle = Build.A.Block.WithNumber(blockNumber - 2).TestObject;
             Block uncle2 = Build.A.Block.WithNumber(blockNumber - 2).TestObject;
             Block block = Build.A.Block.WithNumber(blockNumber).WithUncles(uncle, uncle2).WithTotalDifficulty(1L).WithDifficulty(300).TestObject;
@@ -93,7 +94,7 @@ namespace Nethermind.Merge.Plugin.Test
             PoSSwitcher poSSwitcher = CreatePosSwitcher();
             poSSwitcher.TryUpdateTerminalBlock(block.Header);
 
-            MergeRewardCalculator calculator = new(new RewardCalculator(RopstenSpecProvider.Instance), poSSwitcher);
+            MergeRewardCalculator calculator = new(new RewardCalculator(MainnetSpecProvider.Instance), poSSwitcher);
             BlockReward[] rewards = calculator.CalculateRewards(block);
 
             Assert.That(rewards.Length, Is.EqualTo(3));
@@ -109,7 +110,7 @@ namespace Nethermind.Merge.Plugin.Test
         [Test]
         public void Constantinople_reward_two_uncles()
         {
-            long blockNumber = RopstenSpecProvider.ConstantinopleBlockNumber;
+            long blockNumber = MainnetSpecProvider.ConstantinopleFixBlockNumber;
             Block uncle = Build.A.Block.WithNumber(blockNumber - 2).TestObject;
             Block uncle2 = Build.A.Block.WithNumber(blockNumber - 2).TestObject;
             Block block = Build.A.Block.WithNumber(blockNumber).WithUncles(uncle, uncle2).WithTotalDifficulty(1L).WithDifficulty(300).TestObject;
@@ -118,7 +119,7 @@ namespace Nethermind.Merge.Plugin.Test
 
             PoSSwitcher poSSwitcher = CreatePosSwitcher();
             poSSwitcher.TryUpdateTerminalBlock(block.Header);
-            MergeRewardCalculator calculator = new(new RewardCalculator(RopstenSpecProvider.Instance), poSSwitcher);
+            MergeRewardCalculator calculator = new(new RewardCalculator(MainnetSpecProvider.Instance), poSSwitcher);
             BlockReward[] rewards = calculator.CalculateRewards(block);
 
             Assert.That(rewards.Length, Is.EqualTo(3));
@@ -155,8 +156,8 @@ namespace Nethermind.Merge.Plugin.Test
             TestSpecProvider specProvider = new(London.Instance);
             specProvider.TerminalTotalDifficulty = 2;
             MergeConfig? mergeConfig = new() { };
-            IBlockCacheService blockCacheService = new BlockCacheService();
-            return new PoSSwitcher(mergeConfig, new SyncConfig(), db, blockTree, specProvider, LimboLogs.Instance);
+            _ = new BlockCacheService();
+            return new PoSSwitcher(mergeConfig, new SyncConfig(), db, blockTree, specProvider, new ChainSpec(), LimboLogs.Instance);
         }
 
     }

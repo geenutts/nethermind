@@ -3,14 +3,15 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using Nethermind.Consensus.Comparers;
 using Nethermind.Consensus.Transactions;
 using Nethermind.Core;
 using Nethermind.Core.Collections;
-using Nethermind.Core.Extensions;
 using Nethermind.Core.Specs;
+using Nethermind.Evm;
 using Nethermind.Int256;
 using Nethermind.Logging;
 using Nethermind.TxPool;
@@ -42,27 +43,29 @@ namespace Nethermind.Consensus.Producers
             _logger = logManager?.GetClassLogger<TxPoolTxSource>() ?? throw new ArgumentNullException(nameof(logManager));
         }
 
-        public IEnumerable<Transaction> GetTransactions(BlockHeader parent, long gasLimit)
+        public IEnumerable<Transaction> GetTransactions(BlockHeader parent, long gasLimit, PayloadAttributes? payloadAttributes = null)
         {
             long blockNumber = parent.Number + 1;
-            IEip1559Spec specFor1559 = _specProvider.GetSpecFor1559(blockNumber);
-            UInt256 baseFee = BaseFeeCalculator.Calculate(parent, specFor1559);
-            IDictionary<Address, Transaction[]> pendingTransactions = _transactionPool.GetPendingTransactionsBySender();
+            IReleaseSpec spec = _specProvider.GetSpec(parent);
+            UInt256 baseFee = BaseFeeCalculator.Calculate(parent, spec);
+            IDictionary<AddressAsKey, Transaction[]> pendingTransactions = _transactionPool.GetPendingTransactionsBySender();
+            IDictionary<AddressAsKey, Transaction[]> pendingBlobTransactionsEquivalences = _transactionPool.GetPendingLightBlobTransactionsBySender();
             IComparer<Transaction> comparer = GetComparer(parent, new BlockPreparationContext(baseFee, blockNumber))
                 .ThenBy(ByHashTxComparer.Instance); // in order to sort properly and not lose transactions we need to differentiate on their identity which provided comparer might not be doing
 
             IEnumerable<Transaction> transactions = GetOrderedTransactions(pendingTransactions, comparer);
+            IEnumerable<Transaction> blobTransactions = GetOrderedTransactions(pendingBlobTransactionsEquivalences, comparer);
             if (_logger.IsDebug) _logger.Debug($"Collecting pending transactions at block gas limit {gasLimit}.");
 
+            int checkedTransactions = 0;
             int selectedTransactions = 0;
-            int i = 0;
+            using ArrayPoolList<Transaction> selectedBlobTxs = new((int)spec.MaxBlobCount);
 
-            // TODO: removing transactions from TX pool here seems to be a bad practice since they will
-            // not come back if the block is ignored?
-            int blobsCounter = 0;
+            SelectBlobTransactions(blobTransactions, parent, spec, selectedBlobTxs);
+
             foreach (Transaction tx in transactions)
             {
-                i++;
+                checkedTransactions++;
 
                 if (tx.SenderAddress is null)
                 {
@@ -74,43 +77,144 @@ namespace Nethermind.Consensus.Producers
                 bool success = _txFilterPipeline.Execute(tx, parent);
                 if (!success) continue;
 
-                if (tx.Type == TxType.Blob)
+                foreach (Transaction blobTx in PickBlobTxsBetterThanCurrentTx(selectedBlobTxs, tx, comparer))
                 {
-                    int txAmountOfBlobs = tx.BlobVersionedHashes?.Length ?? 0;
-                    if ((blobsCounter + txAmountOfBlobs) > Eip4844Constants.MaxBlobsPerBlock)
-                    {
-                        if (_logger.IsTrace) _logger.Trace($"Declining {tx.ToShortString()}, no more blob space.");
-                        continue;
-                    }
+                    yield return blobTx;
+                }
 
-                    blobsCounter += txAmountOfBlobs;
-                    if (_logger.IsTrace) _logger.Trace($"Selected shard blob tx {tx.ToShortString()} to be potentially included in block, total blobs included: {blobsCounter}.");
-                }
-                else
-                {
-                    if (_logger.IsTrace)
-                        _logger.Trace($"Selected {tx.ToShortString()} to be potentially included in block.");
-                }
+                if (_logger.IsTrace) _logger.Trace($"Selected {tx.ToShortString()} to be potentially included in block.");
 
                 selectedTransactions++;
                 yield return tx;
             }
 
-            if (_logger.IsDebug) _logger.Debug($"Potentially selected {selectedTransactions} out of {i} pending transactions checked.");
+            if (selectedBlobTxs.Count > 0)
+            {
+                foreach (Transaction blobTx in selectedBlobTxs)
+                {
+                    yield return blobTx;
+                }
+            }
 
+            if (_logger.IsDebug) _logger.Debug($"Potentially selected {selectedTransactions} out of {checkedTransactions} pending transactions checked.");
         }
 
-        protected virtual IEnumerable<Transaction> GetOrderedTransactions(IDictionary<Address, Transaction[]> pendingTransactions, IComparer<Transaction> comparer) =>
+        private static IEnumerable<Transaction> PickBlobTxsBetterThanCurrentTx(ArrayPoolList<Transaction> selectedBlobTxs, Transaction tx, IComparer<Transaction> comparer)
+        {
+            while (selectedBlobTxs.Count > 0)
+            {
+                Transaction blobTx = selectedBlobTxs[0];
+                if (comparer.Compare(blobTx, tx) > 0)
+                {
+                    yield return blobTx;
+                    selectedBlobTxs.Remove(blobTx);
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+
+        private void SelectBlobTransactions(IEnumerable<Transaction> blobTransactions, BlockHeader parent, IReleaseSpec spec, ArrayPoolList<Transaction> selectedBlobTxs)
+        {
+            int checkedBlobTransactions = 0;
+            int selectedBlobTransactions = 0;
+            UInt256 blobGasCounter = 0;
+            UInt256 feePerBlobGas = UInt256.Zero;
+
+            var maxBlobGasPerBlock = spec.GetMaxBlobGasPerBlock();
+            foreach (Transaction blobTx in blobTransactions)
+            {
+                if (blobGasCounter >= maxBlobGasPerBlock)
+                {
+                    if (_logger.IsTrace) _logger.Trace($"Declining {blobTx.ToShortString()}, no more blob space. Block already have {blobGasCounter} blob gas which is max value allowed.");
+                    break;
+                }
+
+                checkedBlobTransactions++;
+
+                ulong txBlobGas = blobTx.GetBlobGas();
+                if (txBlobGas > maxBlobGasPerBlock - blobGasCounter)
+                {
+                    if (_logger.IsTrace) _logger.Trace($"Declining {blobTx.ToShortString()}, not enough blob space.");
+                    continue;
+                }
+
+                if (feePerBlobGas.IsZero && !TryUpdateFeePerBlobGas(blobTx, parent, spec, out feePerBlobGas))
+                {
+                    if (_logger.IsTrace) _logger.Trace($"Declining {blobTx.ToShortString()}, failed to get full version of this blob tx from TxPool.");
+                    continue;
+                }
+
+                if (feePerBlobGas > blobTx.MaxFeePerBlobGas)
+                {
+                    if (_logger.IsTrace) _logger.Trace($"Declining {blobTx.ToShortString()}, data gas fee is too low.");
+                    continue;
+                }
+
+                bool success = _txFilterPipeline.Execute(blobTx, parent);
+                if (!success) continue;
+
+                if (!TryGetFullBlobTx(blobTx, out Transaction fullBlobTx))
+                {
+                    if (_logger.IsTrace) _logger.Trace($"Declining {blobTx.ToShortString()}, failed to get full version of this blob tx from TxPool.");
+                    continue;
+                }
+
+                blobGasCounter += txBlobGas;
+                if (_logger.IsTrace) _logger.Trace($"Selected shard blob tx {fullBlobTx.ToShortString()} to be potentially included in block, total blob gas included: {blobGasCounter}.");
+
+                selectedBlobTransactions++;
+                selectedBlobTxs.Add(fullBlobTx);
+            }
+
+            if (_logger.IsDebug) _logger.Debug($"Potentially selected {selectedBlobTransactions} out of {checkedBlobTransactions} pending blob transactions checked.");
+        }
+
+        private bool TryGetFullBlobTx(Transaction blobTx, [NotNullWhen(true)] out Transaction? fullBlobTx)
+        {
+            if (blobTx.NetworkWrapper is not null)
+            {
+                fullBlobTx = blobTx;
+                return true;
+            }
+
+            fullBlobTx = null;
+            return blobTx.Hash is not null && _transactionPool.TryGetPendingBlobTransaction(blobTx.Hash, out fullBlobTx);
+        }
+
+        private bool TryUpdateFeePerBlobGas(Transaction lightBlobTx, BlockHeader parent, IReleaseSpec spec, out UInt256 feePerBlobGas)
+        {
+            ulong? excessDataGas = BlobGasCalculator.CalculateExcessBlobGas(parent, spec);
+            if (excessDataGas is null)
+            {
+                if (_logger.IsTrace) _logger.Trace($"Declining {lightBlobTx.ToShortString()}, the specification is not configured to handle shard blob transactions.");
+                feePerBlobGas = UInt256.Zero;
+                return false;
+            }
+
+            if (!BlobGasCalculator.TryCalculateFeePerBlobGas(excessDataGas.Value, spec.BlobBaseFeeUpdateFraction, out feePerBlobGas))
+            {
+                if (_logger.IsTrace) _logger.Trace($"Declining {lightBlobTx.ToShortString()}, failed to calculate data gas price.");
+                feePerBlobGas = UInt256.Zero;
+                return false;
+            }
+
+            return true;
+        }
+
+        protected virtual IEnumerable<Transaction> GetOrderedTransactions(IDictionary<AddressAsKey, Transaction[]> pendingTransactions, IComparer<Transaction> comparer) =>
             Order(pendingTransactions, comparer);
 
         protected virtual IComparer<Transaction> GetComparer(BlockHeader parent, BlockPreparationContext blockPreparationContext)
             => _transactionComparerProvider.GetDefaultProducerComparer(blockPreparationContext);
 
-        internal static IEnumerable<Transaction> Order(IDictionary<Address, Transaction[]> pendingTransactions, IComparer<Transaction> comparerWithIdentity)
+        internal static IEnumerable<Transaction> Order(IDictionary<AddressAsKey, Transaction[]> pendingTransactions, IComparer<Transaction> comparerWithIdentity)
         {
             IEnumerator<Transaction>[] bySenderEnumerators = pendingTransactions
-                .Select<KeyValuePair<Address, Transaction[]>, IEnumerable<Transaction>>(g => g.Value)
-                .Select(g => g.GetEnumerator())
+                .Select<KeyValuePair<AddressAsKey, Transaction[]>, IEnumerable<Transaction>>(static g => g.Value)
+                .Select(static g => g.GetEnumerator())
                 .ToArray();
 
             try

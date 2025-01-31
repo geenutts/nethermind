@@ -1,16 +1,18 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
-using System;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
 using Nethermind.Int256;
 
 namespace Nethermind.Serialization.Rlp
 {
-    public class AccountDecoder : IRlpObjectDecoder<Account?>, IRlpStreamDecoder<Account?>
+    public class AccountDecoder : IRlpObjectDecoder<Account?>, IRlpStreamDecoder<Account?>, IRlpValueDecoder<Account?>
     {
         private readonly bool _slimFormat;
+
+        public static AccountDecoder Instance => new();
+        public static AccountDecoder Slim => new(slimFormat: true);
 
         public AccountDecoder() { }
 
@@ -19,24 +21,24 @@ namespace Nethermind.Serialization.Rlp
             _slimFormat = slimFormat;
         }
 
-        public (Keccak CodeHash, Keccak StorageRoot) DecodeHashesOnly(RlpStream rlpStream)
+        public (Hash256 CodeHash, Hash256 StorageRoot) DecodeHashesOnly(RlpStream rlpStream)
         {
             rlpStream.SkipLength();
             rlpStream.SkipItem();
             rlpStream.SkipItem();
 
-            Keccak storageRoot = DecodeStorageRoot(rlpStream);
-            Keccak codeHash = DecodeCodeHash(rlpStream);
+            Hash256 storageRoot = DecodeStorageRoot(rlpStream);
+            Hash256 codeHash = DecodeCodeHash(rlpStream);
 
             return (codeHash, storageRoot);
         }
 
-        public Keccak DecodeStorageRootOnly(RlpStream rlpStream)
+        public Hash256 DecodeStorageRootOnly(ref Rlp.ValueDecoderContext context)
         {
-            rlpStream.SkipLength();
-            rlpStream.SkipItem();
-            rlpStream.SkipItem();
-            Keccak storageRoot = DecodeStorageRoot(rlpStream);
+            context.SkipLength();
+            context.SkipItem();
+            context.SkipItem();
+            Hash256 storageRoot = DecodeStorageRoot(context);
             return storageRoot;
         }
 
@@ -50,8 +52,8 @@ namespace Nethermind.Serialization.Rlp
 
             UInt256 nonce = rlpStream.DecodeUInt256();
             UInt256 balance = rlpStream.DecodeUInt256();
-            Keccak storageRoot = DecodeStorageRoot(rlpStream);
-            Keccak codeHash = DecodeCodeHash(rlpStream);
+            Hash256 storageRoot = DecodeStorageRoot(rlpStream);
+            Hash256 codeHash = DecodeCodeHash(rlpStream);
             if (ReferenceEquals(storageRoot, Keccak.EmptyTreeHash) && ReferenceEquals(codeHash, Keccak.OfAnEmptyString))
             {
                 return new(nonce, balance);
@@ -83,7 +85,7 @@ namespace Nethermind.Serialization.Rlp
 
             Encode(item, rlpStream, contentLength);
 
-            return new Rlp(rlpStream.Data);
+            return new Rlp(rlpStream.Data.ToArray());
         }
 
         public void Encode(Account account, RlpStream rlpStream, int? contentLength = null)
@@ -171,9 +173,78 @@ namespace Nethermind.Serialization.Rlp
             return contentLength;
         }
 
-        private Keccak DecodeStorageRoot(RlpStream rlpStream)
+        private Hash256 DecodeStorageRoot(RlpStream rlpStream)
         {
-            Keccak storageRoot;
+            Hash256 storageRoot;
+            if (_slimFormat && rlpStream.IsNextItemEmptyArray())
+            {
+                rlpStream.ReadByte();
+                storageRoot = Keccak.EmptyTreeHash;
+            }
+            else
+            {
+                storageRoot = rlpStream.DecodeKeccak()!;
+            }
+
+            return storageRoot;
+        }
+
+        private Hash256 DecodeStorageRoot(Rlp.ValueDecoderContext context)
+        {
+            Hash256 storageRoot;
+            if (_slimFormat && context.IsNextItemEmptyArray())
+            {
+                context.ReadByte();
+                storageRoot = Keccak.EmptyTreeHash;
+            }
+            else
+            {
+                storageRoot = context.DecodeKeccak()!;
+            }
+
+            return storageRoot;
+        }
+
+
+        private Hash256 DecodeCodeHash(RlpStream rlpStream)
+        {
+            Hash256 codeHash;
+            if (_slimFormat && rlpStream.IsNextItemEmptyArray())
+            {
+                rlpStream.ReadByte();
+                codeHash = Keccak.OfAnEmptyString;
+            }
+            else
+            {
+                codeHash = rlpStream.DecodeKeccak();
+            }
+
+            return codeHash;
+        }
+
+        public Account? Decode(ref Rlp.ValueDecoderContext decoderContext, RlpBehaviors rlpBehaviors = RlpBehaviors.None)
+        {
+            int length = decoderContext.ReadSequenceLength();
+            if (length == 1)
+            {
+                return null;
+            }
+
+            UInt256 nonce = decoderContext.DecodeUInt256();
+            UInt256 balance = decoderContext.DecodeUInt256();
+            Hash256 storageRoot = DecodeStorageRoot(ref decoderContext);
+            Hash256 codeHash = DecodeCodeHash(ref decoderContext);
+            if (ReferenceEquals(storageRoot, Keccak.EmptyTreeHash) && ReferenceEquals(codeHash, Keccak.OfAnEmptyString))
+            {
+                return new(nonce, balance);
+            }
+
+            return new(nonce, balance, storageRoot, codeHash);
+        }
+
+        private Hash256 DecodeStorageRoot(ref Rlp.ValueDecoderContext rlpStream)
+        {
+            Hash256 storageRoot;
             if (_slimFormat && rlpStream.IsNextItemEmptyArray())
             {
                 rlpStream.ReadByte();
@@ -187,9 +258,9 @@ namespace Nethermind.Serialization.Rlp
             return storageRoot;
         }
 
-        private Keccak DecodeCodeHash(RlpStream rlpStream)
+        private Hash256 DecodeCodeHash(ref Rlp.ValueDecoderContext rlpStream)
         {
-            Keccak codeHash;
+            Hash256 codeHash;
             if (_slimFormat && rlpStream.IsNextItemEmptyArray())
             {
                 rlpStream.ReadByte();
@@ -201,6 +272,55 @@ namespace Nethermind.Serialization.Rlp
             }
 
             return codeHash;
+        }
+
+        private ValueHash256 DecodeStorageRootStruct(ref Rlp.ValueDecoderContext rlpStream)
+        {
+            ValueHash256 storageRoot;
+            if (_slimFormat && rlpStream.IsNextItemEmptyArray())
+            {
+                rlpStream.ReadByte();
+                storageRoot = Keccak.EmptyTreeHash.ValueHash256;
+            }
+            else
+            {
+                storageRoot = rlpStream.DecodeValueKeccak()!.Value;
+            }
+
+            return storageRoot;
+        }
+
+        private ValueHash256 DecodeCodeHashStruct(ref Rlp.ValueDecoderContext rlpStream)
+        {
+            ValueHash256 codeHash;
+            if (_slimFormat && rlpStream.IsNextItemEmptyArray())
+            {
+                rlpStream.ReadByte();
+                codeHash = Keccak.OfAnEmptyString.ValueHash256;
+            }
+            else
+            {
+                codeHash = rlpStream.DecodeValueKeccak()!.Value;
+            }
+
+            return codeHash;
+        }
+
+        public bool TryDecodeStruct(ref Rlp.ValueDecoderContext decoderContext, out AccountStruct account)
+        {
+            int length = decoderContext.ReadSequenceLength();
+            if (length == 1)
+            {
+                account = AccountStruct.TotallyEmpty;
+                return false;
+            }
+
+            UInt256 nonce = decoderContext.DecodeUInt256();
+            UInt256 balance = decoderContext.DecodeUInt256();
+            ValueHash256 storageRoot = DecodeStorageRootStruct(ref decoderContext);
+            ValueHash256 codeHash = DecodeCodeHashStruct(ref decoderContext);
+            account = new AccountStruct(nonce, balance, storageRoot, codeHash);
+            return true;
         }
     }
 }

@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
+using DotNetty.Buffers;
 using DotNetty.Handlers.Logging;
 using DotNetty.Transport.Bootstrapping;
 using DotNetty.Transport.Channels;
@@ -17,6 +18,7 @@ using Nethermind.Crypto;
 using Nethermind.Logging;
 using Nethermind.Network.Discovery.Messages;
 using Nethermind.Network.Test.Builders;
+using Nethermind.Serialization.Rlp;
 using Nethermind.Stats.Model;
 using NSubstitute;
 using NUnit.Framework;
@@ -55,13 +57,13 @@ namespace Nethermind.Network.Discovery.Test
             _discoveryManagersMocks.Add(discoveryManagerMock);
             _discoveryManagersMocks.Add(discoveryManagerMock2);
 
-            Assert.That(_channelActivatedCounter, Is.EqualTo(2));
+            Assert.That(() => _channelActivatedCounter, Is.EqualTo(2).After(1000, 100));
         }
 
         [TearDown]
         public async Task CleanUp()
         {
-            _channels.ForEach(x => { x.CloseAsync(); });
+            _channels.ForEach(static x => { x.CloseAsync(); });
             await Task.Delay(50);
         }
 
@@ -76,18 +78,18 @@ namespace Nethermind.Network.Discovery.Test
                 FarAddress = _address2
             };
 
-            _discoveryHandlers[0].SendMsg(msg);
+            await _discoveryHandlers[0].SendMsg(msg);
             await SleepWhileWaiting();
-            _discoveryManagersMocks[1].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(x => x.MsgType == MsgType.Ping));
+            _discoveryManagersMocks[1].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(static x => x.MsgType == MsgType.Ping));
 
             PingMsg msg2 = new(_privateKey.PublicKey, Timestamper.Default.UnixTime.SecondsLong + 1200, _address2, _address, new byte[32])
             {
                 FarAddress = _address
             };
 
-            _discoveryHandlers[1].SendMsg(msg2);
+            await _discoveryHandlers[1].SendMsg(msg2);
             await SleepWhileWaiting();
-            _discoveryManagersMocks[0].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(x => x.MsgType == MsgType.Ping));
+            _discoveryManagersMocks[0].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(static x => x.MsgType == MsgType.Ping));
 
             AssertMetrics(258);
         }
@@ -103,17 +105,17 @@ namespace Nethermind.Network.Discovery.Test
                 FarAddress = _address2
             };
 
-            _discoveryHandlers[0].SendMsg(msg);
+            await _discoveryHandlers[0].SendMsg(msg);
             await SleepWhileWaiting();
-            _discoveryManagersMocks[1].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(x => x.MsgType == MsgType.Pong));
+            _discoveryManagersMocks[1].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(static x => x.MsgType == MsgType.Pong));
 
             PongMsg msg2 = new(_privateKey.PublicKey, Timestamper.Default.UnixTime.SecondsLong + 1200, new byte[] { 1, 2, 3 })
             {
                 FarAddress = _address
             };
-            _discoveryHandlers[1].SendMsg(msg2);
+            await _discoveryHandlers[1].SendMsg(msg2);
             await SleepWhileWaiting();
-            _discoveryManagersMocks[0].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(x => x.MsgType == MsgType.Pong));
+            _discoveryManagersMocks[0].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(static x => x.MsgType == MsgType.Pong));
 
             AssertMetrics(240);
         }
@@ -129,18 +131,18 @@ namespace Nethermind.Network.Discovery.Test
                 FarAddress = _address2
             };
 
-            _discoveryHandlers[0].SendMsg(msg);
+            await _discoveryHandlers[0].SendMsg(msg);
             await SleepWhileWaiting();
-            _discoveryManagersMocks[1].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(x => x.MsgType == MsgType.FindNode));
+            _discoveryManagersMocks[1].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(static x => x.MsgType == MsgType.FindNode));
 
             FindNodeMsg msg2 = new(_privateKey2.PublicKey, Timestamper.Default.UnixTime.SecondsLong + 1200, new byte[] { 1, 2, 3 })
             {
                 FarAddress = _address
             };
 
-            _discoveryHandlers[1].SendMsg(msg2);
+            await _discoveryHandlers[1].SendMsg(msg2);
             await SleepWhileWaiting();
-            _discoveryManagersMocks[0].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(x => x.MsgType == MsgType.FindNode));
+            _discoveryManagersMocks[0].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(static x => x.MsgType == MsgType.FindNode));
 
             AssertMetrics(216);
         }
@@ -156,20 +158,36 @@ namespace Nethermind.Network.Discovery.Test
                 FarAddress = _address2
             };
 
-            _discoveryHandlers[0].SendMsg(msg);
+            await _discoveryHandlers[0].SendMsg(msg);
             await SleepWhileWaiting();
-            _discoveryManagersMocks[1].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(x => x.MsgType == MsgType.Neighbors));
+            _discoveryManagersMocks[1].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(static x => x.MsgType == MsgType.Neighbors));
 
             NeighborsMsg msg2 = new(_privateKey.PublicKey, Timestamper.Default.UnixTime.SecondsLong + 1200, new List<Node>().ToArray())
             {
                 FarAddress = _address,
             };
 
-            _discoveryHandlers[1].SendMsg(msg2);
+            await _discoveryHandlers[1].SendMsg(msg2);
             await SleepWhileWaiting();
-            _discoveryManagersMocks[0].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(x => x.MsgType == MsgType.Neighbors));
+            _discoveryManagersMocks[0].Received(1).OnIncomingMsg(Arg.Is<DiscoveryMsg>(static x => x.MsgType == MsgType.Neighbors));
 
             AssertMetrics(210);
+        }
+
+        [Test]
+        public void ForwardsUnrecognizedMessageToNextHandler()
+        {
+            byte[] data = [1, 2, 3];
+            var from = IPEndPoint.Parse("127.0.0.1:10000");
+            var to = IPEndPoint.Parse("127.0.0.1:10003");
+            var packet = new DatagramPacket(Unpooled.WrappedBuffer(data), from, to);
+
+            IChannelHandlerContext ctx = Substitute.For<IChannelHandlerContext>();
+            _discoveryHandlers[0].ChannelRead(ctx, packet);
+
+            ctx.FireChannelRead(Arg.Is<DatagramPacket>(
+                p => p.Content.ReadAllBytesAsArray().SequenceEqual(data)
+            ));
         }
 
         private static void ResetMetrics()

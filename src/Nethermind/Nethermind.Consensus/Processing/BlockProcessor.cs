@@ -4,69 +4,76 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Nethermind.Blockchain;
+using Nethermind.Blockchain.BeaconBlockRoot;
+using Nethermind.Blockchain.Blocks;
 using Nethermind.Blockchain.Receipts;
+using Nethermind.Consensus.ExecutionRequests;
 using Nethermind.Consensus.Rewards;
 using Nethermind.Consensus.Validators;
 using Nethermind.Consensus.Withdrawals;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
+using Nethermind.Core.Extensions;
 using Nethermind.Core.Specs;
+using Nethermind.Core.Threading;
 using Nethermind.Crypto;
+using Nethermind.Evm;
 using Nethermind.Evm.Tracing;
+using Nethermind.Evm.TransactionProcessing;
 using Nethermind.Int256;
 using Nethermind.Logging;
 using Nethermind.Specs.Forks;
 using Nethermind.State;
+using Metrics = Nethermind.Blockchain.Metrics;
 
 namespace Nethermind.Consensus.Processing;
 
-public partial class BlockProcessor : IBlockProcessor
+public partial class BlockProcessor(
+    ISpecProvider? specProvider,
+    IBlockValidator? blockValidator,
+    IRewardCalculator? rewardCalculator,
+    IBlockProcessor.IBlockTransactionsExecutor? blockTransactionsExecutor,
+    IWorldState? stateProvider,
+    IReceiptStorage? receiptStorage,
+    ITransactionProcessor transactionProcessor,
+    IBeaconBlockRootHandler? beaconBlockRootHandler,
+    IBlockhashStore? blockHashStore,
+    ILogManager? logManager,
+    IWithdrawalProcessor? withdrawalProcessor = null,
+    IReceiptsRootCalculator? receiptsRootCalculator = null,
+    IBlockCachePreWarmer? preWarmer = null,
+    IExecutionRequestsProcessor? executionRequestsProcessor = null)
+    : IBlockProcessor
 {
-    private readonly ILogger _logger;
-    private readonly ISpecProvider _specProvider;
-    protected readonly IWorldState _stateProvider;
-    private readonly IReceiptStorage _receiptStorage;
-    private readonly IWitnessCollector _witnessCollector;
-    private readonly IWithdrawalProcessor _withdrawalProcessor;
-    private readonly IBlockValidator _blockValidator;
-    private readonly IRewardCalculator _rewardCalculator;
-    private readonly IBlockProcessor.IBlockTransactionsExecutor _blockTransactionsExecutor;
+    private readonly ILogger _logger = logManager?.GetClassLogger() ?? throw new ArgumentNullException(nameof(logManager));
+    private readonly ISpecProvider _specProvider = specProvider ?? throw new ArgumentNullException(nameof(specProvider));
+    protected readonly WorldStateMetricsDecorator _stateProvider = new WorldStateMetricsDecorator(stateProvider) ?? throw new ArgumentNullException(nameof(stateProvider));
+    private readonly IReceiptStorage _receiptStorage = receiptStorage ?? throw new ArgumentNullException(nameof(receiptStorage));
+    private readonly IReceiptsRootCalculator _receiptsRootCalculator = receiptsRootCalculator ?? ReceiptsRootCalculator.Instance;
+    private readonly IWithdrawalProcessor _withdrawalProcessor = withdrawalProcessor ?? new WithdrawalProcessor(stateProvider, logManager);
+    private readonly IBeaconBlockRootHandler _beaconBlockRootHandler = beaconBlockRootHandler ?? throw new ArgumentNullException(nameof(beaconBlockRootHandler));
+    private readonly IBlockValidator _blockValidator = blockValidator ?? throw new ArgumentNullException(nameof(blockValidator));
+    private readonly IRewardCalculator _rewardCalculator = rewardCalculator ?? throw new ArgumentNullException(nameof(rewardCalculator));
+    private readonly IBlockProcessor.IBlockTransactionsExecutor _blockTransactionsExecutor = blockTransactionsExecutor ?? throw new ArgumentNullException(nameof(blockTransactionsExecutor));
+    private readonly IBlockhashStore _blockhashStore = blockHashStore ?? throw new ArgumentNullException(nameof(blockHashStore));
+    private readonly IExecutionRequestsProcessor _executionRequestsProcessor = executionRequestsProcessor ?? new ExecutionRequestsProcessor(transactionProcessor);
+    private Task _clearTask = Task.CompletedTask;
 
     private const int MaxUncommittedBlocks = 64;
+    private readonly Action<Task> _clearCaches = _ => preWarmer?.ClearCaches();
 
     /// <summary>
     /// We use a single receipt tracer for all blocks. Internally receipt tracer forwards most of the calls
     /// to any block-specific tracers.
     /// </summary>
-    private readonly BlockReceiptsTracer _receiptsTracer;
+    protected BlockReceiptsTracer ReceiptsTracer { get; set; } = new();
 
-    public BlockProcessor(
-        ISpecProvider? specProvider,
-        IBlockValidator? blockValidator,
-        IRewardCalculator? rewardCalculator,
-        IBlockProcessor.IBlockTransactionsExecutor? blockTransactionsExecutor,
-        IWorldState? stateProvider,
-        IReceiptStorage? receiptStorage,
-        IWitnessCollector? witnessCollector,
-        ILogManager? logManager,
-        IWithdrawalProcessor? withdrawalProcessor = null)
-    {
-        _logger = logManager?.GetClassLogger() ?? throw new ArgumentNullException(nameof(logManager));
-        _specProvider = specProvider ?? throw new ArgumentNullException(nameof(specProvider));
-        _blockValidator = blockValidator ?? throw new ArgumentNullException(nameof(blockValidator));
-        _stateProvider = stateProvider ?? throw new ArgumentNullException(nameof(stateProvider));
-        _receiptStorage = receiptStorage ?? throw new ArgumentNullException(nameof(receiptStorage));
-        _witnessCollector = witnessCollector ?? throw new ArgumentNullException(nameof(witnessCollector));
-        _withdrawalProcessor = withdrawalProcessor ?? new WithdrawalProcessor(stateProvider, logManager);
-        _rewardCalculator = rewardCalculator ?? throw new ArgumentNullException(nameof(rewardCalculator));
-        _blockTransactionsExecutor = blockTransactionsExecutor ?? throw new ArgumentNullException(nameof(blockTransactionsExecutor));
-
-
-        _receiptsTracer = new BlockReceiptsTracer();
-    }
-
-    public event EventHandler<BlockProcessedEventArgs> BlockProcessed;
+    public event EventHandler<BlockProcessedEventArgs>? BlockProcessed;
 
     public event EventHandler<TxProcessedEventArgs> TransactionProcessed
     {
@@ -75,40 +82,81 @@ public partial class BlockProcessor : IBlockProcessor
     }
 
     // TODO: move to branch processor
-    public Block[] Process(Keccak newBranchStateRoot, List<Block> suggestedBlocks, ProcessingOptions options, IBlockTracer blockTracer)
+    public Block[] Process(Hash256 newBranchStateRoot, List<Block> suggestedBlocks, ProcessingOptions options, IBlockTracer blockTracer)
     {
-        if (suggestedBlocks.Count == 0) return Array.Empty<Block>();
-
-        BlocksProcessing?.Invoke(this, new BlocksProcessingEventArgs(suggestedBlocks));
+        if (suggestedBlocks.Count == 0) return [];
 
         /* We need to save the snapshot state root before reorganization in case the new branch has invalid blocks.
            In case of invalid blocks on the new branch we will discard the entire branch and come back to
            the previous head state.*/
-        Keccak previousBranchStateRoot = CreateCheckpoint();
+        Hash256 previousBranchStateRoot = CreateCheckpoint();
         InitBranch(newBranchStateRoot);
+
+        Block suggestedBlock = suggestedBlocks[0];
+        // Start prewarming as early as possible
+        WaitForCacheClear();
+        (CancellationTokenSource? prewarmCancellation, Task? preWarmTask)
+            = PreWarmTransactions(suggestedBlock, newBranchStateRoot);
+
+        BlocksProcessing?.Invoke(this, new BlocksProcessingEventArgs(suggestedBlocks));
+
+        Hash256 preBlockStateRoot = newBranchStateRoot;
 
         bool notReadOnly = !options.ContainsFlag(ProcessingOptions.ReadOnlyChain);
         int blocksCount = suggestedBlocks.Count;
         Block[] processedBlocks = new Block[blocksCount];
-        using IDisposable tracker = _witnessCollector.TrackOnThisThread();
         try
         {
             for (int i = 0; i < blocksCount; i++)
             {
-                if (blocksCount > 64 && i % 8 == 0)
+                WaitForCacheClear();
+                suggestedBlock = suggestedBlocks[i];
+                // If prewarmCancellation is not null it means we are in first iteration of loop
+                // and started prewarming at method entry, so don't start it again
+                if (prewarmCancellation is null)
                 {
-                    if (_logger.IsInfo) _logger.Info($"Processing part of a long blocks branch {i}/{blocksCount}. Block: {suggestedBlocks[i]}");
+                    (prewarmCancellation, preWarmTask) = PreWarmTransactions(suggestedBlock, preBlockStateRoot);
                 }
 
-                _witnessCollector.Reset();
-                (Block processedBlock, TxReceipt[] receipts) = ProcessOne(suggestedBlocks[i], options, blockTracer);
+                if (blocksCount > 64 && i % 8 == 0)
+                {
+                    if (_logger.IsInfo) _logger.Info($"Processing part of a long blocks branch {i}/{blocksCount}. Block: {suggestedBlock}");
+                }
+
+                if (notReadOnly)
+                {
+                    BlockProcessing?.Invoke(this, new BlockEventArgs(suggestedBlock));
+                }
+
+                Block processedBlock;
+                TxReceipt[] receipts;
+
+                if (prewarmCancellation is not null)
+                {
+                    (processedBlock, receipts) = ProcessOne(suggestedBlock, options, blockTracer);
+                    // Block is processed, we can cancel the prewarm task
+                    CancellationTokenExtensions.CancelDisposeAndClear(ref prewarmCancellation);
+                }
+                else
+                {
+                    // Even though we skip prewarming we still need to ensure the caches are cleared
+                    CacheType result = preWarmer?.ClearCaches() ?? default;
+                    if (result != default)
+                    {
+                        if (_logger.IsWarn) _logger.Warn($"Low txs, caches {result} are not empty. Clearing them.");
+                    }
+                    (processedBlock, receipts) = ProcessOne(suggestedBlock, options, blockTracer);
+                }
+
                 processedBlocks[i] = processedBlock;
 
                 // be cautious here as AuRa depends on processing
-                PreCommitBlock(newBranchStateRoot, suggestedBlocks[i].Number);
+                PreCommitBlock(newBranchStateRoot, suggestedBlock.Number);
+                QueueClearCaches(preWarmTask);
+
                 if (notReadOnly)
                 {
-                    _witnessCollector.Persist(processedBlock.Hash!);
+                    Metrics.StateMerkleizationTime = _stateProvider.StateMerkleizationTime;
                     BlockProcessed?.Invoke(this, new BlockProcessedEventArgs(processedBlock, receipts));
                 }
 
@@ -121,9 +169,20 @@ public partial class BlockProcessor : IBlockProcessor
                 {
                     if (_logger.IsInfo) _logger.Info($"Commit part of a long blocks branch {i}/{blocksCount}");
                     previousBranchStateRoot = CreateCheckpoint();
-                    Keccak? newStateRoot = suggestedBlocks[i].StateRoot;
+                    Hash256? newStateRoot = suggestedBlock.StateRoot;
                     InitBranch(newStateRoot, false);
                 }
+
+                preBlockStateRoot = processedBlock.StateRoot;
+                // Make sure the prewarm task is finished before we reset the state
+                preWarmTask?.GetAwaiter().GetResult();
+                preWarmTask = null;
+                _stateProvider.Reset(resizeCollections: true);
+
+                // Calculate the transaction hashes in the background and release tx sequence memory
+                // Hashes will be required for PersistentReceiptStorage in ForkchoiceUpdatedHandler
+                // Though we still want to release the memory even if syncing rather than processing live
+                TxHashCalculator.CalculateInBackground(suggestedBlock);
             }
 
             if (options.ContainsFlag(ProcessingOptions.DoNotUpdateHead))
@@ -135,16 +194,50 @@ public partial class BlockProcessor : IBlockProcessor
         }
         catch (Exception ex) // try to restore at all cost
         {
-            _logger.Trace($"Encountered exception {ex} while processing blocks.");
+            if (_logger.IsWarn) _logger.Warn($"Encountered exception {ex} while processing blocks.");
+            CancellationTokenExtensions.CancelDisposeAndClear(ref prewarmCancellation);
+            QueueClearCaches(preWarmTask);
+            preWarmTask?.GetAwaiter().GetResult();
             RestoreBranch(previousBranchStateRoot);
             throw;
         }
     }
 
+    private (CancellationTokenSource prewarmCancellation, Task preWarmTask) PreWarmTransactions(Block suggestedBlock, Hash256 preBlockStateRoot)
+    {
+        if (preWarmer is null || suggestedBlock.Transactions.Length < 3) return (null, null);
+
+        CancellationTokenSource prewarmCancellation = new();
+        Task preWarmTask = preWarmer.PreWarmCaches(suggestedBlock,
+                                                   preBlockStateRoot,
+                                                   _specProvider.GetSpec(suggestedBlock.Header),
+                                                   prewarmCancellation.Token,
+                                                   _beaconBlockRootHandler);
+
+        return (prewarmCancellation, preWarmTask);
+    }
+
+    private void WaitForCacheClear() => _clearTask.GetAwaiter().GetResult();
+
+    private void QueueClearCaches(Task? preWarmTask)
+    {
+        if (preWarmTask is not null)
+        {
+            // Can start clearing caches in background
+            _clearTask = preWarmTask.ContinueWith(_clearCaches, TaskContinuationOptions.RunContinuationsAsynchronously);
+        }
+        else if (preWarmer is not null)
+        {
+            _clearTask = Task.Run(preWarmer.ClearCaches);
+        }
+    }
+
     public event EventHandler<BlocksProcessingEventArgs>? BlocksProcessing;
 
+    public event EventHandler<BlockEventArgs>? BlockProcessing;
+
     // TODO: move to branch processor
-    private void InitBranch(Keccak branchStateRoot, bool incrementReorgMetric = true)
+    private void InitBranch(Hash256 branchStateRoot, bool incrementReorgMetric = true)
     {
         /* Please note that we do not reset the state if branch state root is null.
            That said, I do not remember in what cases we receive null here.*/
@@ -162,20 +255,20 @@ public partial class BlockProcessor : IBlockProcessor
     }
 
     // TODO: move to branch processor
-    private Keccak CreateCheckpoint()
+    private Hash256 CreateCheckpoint()
     {
         return _stateProvider.StateRoot;
     }
 
     // TODO: move to block processing pipeline
-    private void PreCommitBlock(Keccak newBranchStateRoot, long blockNumber)
+    private void PreCommitBlock(Hash256 newBranchStateRoot, long blockNumber)
     {
         if (_logger.IsTrace) _logger.Trace($"Committing the branch - {newBranchStateRoot}");
         _stateProvider.CommitTree(blockNumber);
     }
 
     // TODO: move to branch processor
-    private void RestoreBranch(Keccak branchingPointStateRoot)
+    private void RestoreBranch(Hash256 branchingPointStateRoot)
     {
         if (_logger.IsTrace) _logger.Trace($"Restoring the branch checkpoint - {branchingPointStateRoot}");
         _stateProvider.Reset();
@@ -203,13 +296,19 @@ public partial class BlockProcessor : IBlockProcessor
     // TODO: block processor pipeline
     private void ValidateProcessedBlock(Block suggestedBlock, ProcessingOptions options, Block block, TxReceipt[] receipts)
     {
-        if (!options.ContainsFlag(ProcessingOptions.NoValidation) && !_blockValidator.ValidateProcessedBlock(block, receipts, suggestedBlock))
+        if (!options.ContainsFlag(ProcessingOptions.NoValidation) && !_blockValidator.ValidateProcessedBlock(block, receipts, suggestedBlock, out string? error))
         {
-            if (_logger.IsError) _logger.Error($"Processed block is not valid {suggestedBlock.ToString(Block.Format.FullHashAndNumber)}");
-            if (_logger.IsError) _logger.Error($"Suggested block TD: {suggestedBlock.TotalDifficulty}, Suggested block IsPostMerge {suggestedBlock.IsPostMerge}, Block TD: {block.TotalDifficulty}, Block IsPostMerge {block.IsPostMerge}");
-            throw new InvalidBlockException(suggestedBlock);
+            if (_logger.IsWarn) _logger.Warn(InvalidBlockHelper.GetMessage(suggestedBlock, "invalid block after processing"));
+            throw new InvalidBlockException(suggestedBlock, error);
         }
+
+        // Block is valid, copy the account changes as we use the suggested block not the processed one
+        suggestedBlock.AccountChanges = block.AccountChanges;
+        suggestedBlock.ExecutionRequests = block.ExecutionRequests;
     }
+
+    private bool ShouldComputeStateRoot(BlockHeader header) =>
+        !header.IsGenesis || !_specProvider.GenesisStateUnavailable;
 
     // TODO: block processor pipeline
     protected virtual TxReceipt[] ProcessBlock(
@@ -217,30 +316,87 @@ public partial class BlockProcessor : IBlockProcessor
         IBlockTracer blockTracer,
         ProcessingOptions options)
     {
-        IReleaseSpec spec = _specProvider.GetSpec(block.Header);
+        BlockHeader header = block.Header;
+        IReleaseSpec spec = _specProvider.GetSpec(header);
 
-        _receiptsTracer.SetOtherTracer(blockTracer);
-        _receiptsTracer.StartNewBlockTrace(block);
-        TxReceipt[] receipts = _blockTransactionsExecutor.ProcessTransactions(block, options, _receiptsTracer, spec);
+        ReceiptsTracer.SetOtherTracer(blockTracer);
+        ReceiptsTracer.StartNewBlockTrace(block);
 
-        block.Header.ReceiptsRoot = receipts.GetReceiptsRoot(spec, block.ReceiptsRoot);
+        StoreBeaconRoot(block, spec);
+        _blockhashStore.ApplyBlockhashStateChanges(header);
+        _stateProvider.Commit(spec, commitStorageRoots: false);
+
+        TxReceipt[] receipts = _blockTransactionsExecutor.ProcessTransactions(block, options, ReceiptsTracer, spec);
+        CalculateBlooms(receipts);
+
+        if (spec.IsEip4844Enabled)
+        {
+            header.BlobGasUsed = BlobGasCalculator.CalculateBlobGas(block.Transactions);
+        }
+
+        header.ReceiptsRoot = _receiptsRootCalculator.GetReceiptsRoot(receipts, spec, block.ReceiptsRoot);
         ApplyMinerRewards(block, blockTracer, spec);
         _withdrawalProcessor.ProcessWithdrawals(block, spec);
-        _receiptsTracer.EndBlockTrace();
 
+        // We need to do a commit here as in _executionRequestsProcessor while executing system transactions
+        // we do WorldState.Commit(SystemTransactionReleaseSpec.Instance). In SystemTransactionReleaseSpec
+        // Eip158Enabled=false, so we end up persisting empty accounts created while processing withdrawals.
         _stateProvider.Commit(spec);
-        _stateProvider.RecalculateStateRoot();
 
-        block.Header.StateRoot = _stateProvider.StateRoot;
-        block.Header.Hash = block.Header.CalculateHash();
+        _executionRequestsProcessor.ProcessExecutionRequests(block, _stateProvider, receipts, spec);
+
+        ReceiptsTracer.EndBlockTrace();
+
+        _stateProvider.Commit(spec, commitStorageRoots: true);
+
+        if (BlockchainProcessor.IsMainProcessingThread)
+        {
+            // Get the accounts that have been changed
+            block.AccountChanges = _stateProvider.GetAccountChanges();
+        }
+
+        if (ShouldComputeStateRoot(header))
+        {
+            _stateProvider.RecalculateStateRoot();
+            header.StateRoot = _stateProvider.StateRoot;
+        }
+
+        header.Hash = header.CalculateHash();
 
         return receipts;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void CalculateBlooms(TxReceipt[] receipts)
+    {
+        ParallelUnbalancedWork.For(
+            0,
+            receipts.Length,
+            ParallelUnbalancedWork.DefaultOptions,
+            receipts,
+            static (i, receipts) =>
+        {
+            receipts[i].CalculateBloom();
+            return receipts;
+        });
+    }
+
+    private void StoreBeaconRoot(Block block, IReleaseSpec spec)
+    {
+        try
+        {
+            _beaconBlockRootHandler.StoreBeaconRoot(block, spec, NullTxTracer.Instance);
+        }
+        catch (Exception e)
+        {
+            if (_logger.IsWarn) _logger.Warn($"Storing beacon block root for block {block.ToString(Block.Format.FullHashAndNumber)} failed: {e}");
+        }
     }
 
     // TODO: block processor pipeline
     private void StoreTxReceipts(Block block, TxReceipt[] txReceipts)
     {
-        // Setting canonical is done by ReceiptCanonicalityMonitor on block move to main
+        // Setting canonical is done when the BlockAddedToMain event is fired
         _receiptStorage.Insert(block, txReceipts, false);
     }
 
@@ -258,7 +414,8 @@ public partial class BlockProcessor : IBlockProcessor
             bh.GasLimit,
             bh.Timestamp,
             bh.ExtraData,
-            bh.ExcessDataGas)
+            bh.BlobGasUsed,
+            bh.ExcessBlobGas)
         {
             Bloom = Bloom.Empty,
             Author = bh.Author,
@@ -272,10 +429,17 @@ public partial class BlockProcessor : IBlockProcessor
             ReceiptsRoot = bh.ReceiptsRoot,
             BaseFeePerGas = bh.BaseFeePerGas,
             WithdrawalsRoot = bh.WithdrawalsRoot,
+            RequestsHash = bh.RequestsHash,
             IsPostMerge = bh.IsPostMerge,
+            ParentBeaconBlockRoot = bh.ParentBeaconBlockRoot
         };
 
-        return suggestedBlock.CreateCopy(headerForProcessing);
+        if (!ShouldComputeStateRoot(bh))
+        {
+            headerForProcessing.StateRoot = bh.StateRoot;
+        }
+
+        return suggestedBlock.WithReplacedHeader(headerForProcessing);
     }
 
     // TODO: block processor pipeline
@@ -287,12 +451,10 @@ public partial class BlockProcessor : IBlockProcessor
         {
             BlockReward reward = rewards[i];
 
-            ITxTracer txTracer = NullTxTracer.Instance;
-            if (tracer.IsTracingRewards)
-            {
-                // we need this tracer to be able to track any potential miner account creation
-                txTracer = tracer.StartNewTxTrace(null);
-            }
+            using ITxTracer txTracer = tracer.IsTracingRewards
+                ? // we need this tracer to be able to track any potential miner account creation
+                tracer.StartNewTxTrace(null)
+                : NullTxTracer.Instance;
 
             ApplyMinerReward(block, reward, spec);
 
@@ -313,20 +475,20 @@ public partial class BlockProcessor : IBlockProcessor
     {
         if (_logger.IsTrace) _logger.Trace($"  {(BigInteger)reward.Value / (BigInteger)Unit.Ether:N3}{Unit.EthSymbol} for account at {reward.Address}");
 
-        if (!_stateProvider.AccountExists(reward.Address))
-        {
-            _stateProvider.CreateAccount(reward.Address, reward.Value);
-        }
-        else
-        {
-            _stateProvider.AddToBalance(reward.Address, reward.Value, spec);
-        }
+        _stateProvider.AddToBalanceAndCreateIfNotExists(reward.Address, reward.Value, spec);
     }
 
     // TODO: block processor pipeline
     private void ApplyDaoTransition(Block block)
     {
-        if (_specProvider.DaoBlockNumber.HasValue && _specProvider.DaoBlockNumber.Value == block.Header.Number)
+        long? daoBlockNumber = _specProvider.DaoBlockNumber;
+        if (daoBlockNumber.HasValue && daoBlockNumber.Value == block.Header.Number)
+        {
+            ApplyTransition();
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        void ApplyTransition()
         {
             if (_logger.IsInfo) _logger.Info("Applying the DAO transition");
             Address withdrawAccount = DaoData.DaoWithdrawalAccount;
@@ -340,6 +502,28 @@ public partial class BlockProcessor : IBlockProcessor
                 UInt256 balance = _stateProvider.GetBalance(daoAccount);
                 _stateProvider.AddToBalance(withdrawAccount, balance, Dao.Instance);
                 _stateProvider.SubtractFromBalance(daoAccount, balance, Dao.Instance);
+            }
+        }
+    }
+
+    private class TxHashCalculator(Block suggestedBlock) : IThreadPoolWorkItem
+    {
+        public static void CalculateInBackground(Block suggestedBlock)
+        {
+            // Memory has been reserved on the transactions to delay calculate the hashes
+            // We calculate the hashes in the background to release that memory
+            ThreadPool.UnsafeQueueUserWorkItem(new TxHashCalculator(suggestedBlock), preferLocal: false);
+        }
+
+        void IThreadPoolWorkItem.Execute()
+        {
+            // Hashes will be required for PersistentReceiptStorage in UpdateMainChain ForkchoiceUpdatedHandler
+            // Which occurs after the block has been processed; however the block is stored in cache and picked up
+            // from there so we can calculate the hashes now for that later use.
+            foreach (Transaction tx in suggestedBlock.Transactions)
+            {
+                // Calculate the hashes to release the memory from the transactionSequence
+                tx.CalculateHashInternal();
             }
         }
     }

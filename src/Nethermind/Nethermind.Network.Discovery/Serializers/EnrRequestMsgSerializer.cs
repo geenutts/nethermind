@@ -5,7 +5,6 @@ using DotNetty.Buffers;
 using Nethermind.Core.Crypto;
 using Nethermind.Crypto;
 using Nethermind.Network.Discovery.Messages;
-using Nethermind.Network.P2P;
 using Nethermind.Serialization.Rlp;
 
 namespace Nethermind.Network.Discovery.Serializers;
@@ -32,13 +31,13 @@ public class EnrRequestMsgSerializer : DiscoveryMsgSerializerBase, IZeroInnerMes
 
     public EnrRequestMsg Deserialize(IByteBuffer msgBytes)
     {
-        (PublicKey FarPublicKey, Memory<byte> Mdc, IByteBuffer Data) results = PrepareForDeserialization(msgBytes);
-        NettyRlpStream rlpStream = new(results.Data);
+        (PublicKey FarPublicKey, _, IByteBuffer Data) = PrepareForDeserialization(msgBytes);
+        NettyRlpStream rlpStream = new(Data);
 
         rlpStream.ReadSequenceLength();
         long expirationTime = rlpStream.DecodeLong();
 
-        EnrRequestMsg msg = new(results.FarPublicKey, expirationTime);
+        EnrRequestMsg msg = new(FarPublicKey, expirationTime);
         return msg;
     }
 

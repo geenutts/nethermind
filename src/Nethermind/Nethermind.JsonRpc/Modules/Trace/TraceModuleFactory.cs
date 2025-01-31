@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
-using System.Collections.Generic;
 using Nethermind.Blockchain;
 using Nethermind.Blockchain.Receipts;
 using Nethermind.Consensus;
@@ -10,93 +9,67 @@ using Nethermind.Consensus.Processing;
 using Nethermind.Consensus.Rewards;
 using Nethermind.Consensus.Tracing;
 using Nethermind.Consensus.Validators;
-using Nethermind.Core;
+using Nethermind.Core.Crypto;
 using Nethermind.Core.Specs;
-using Nethermind.Db;
 using Nethermind.Evm.TransactionProcessing;
-using Nethermind.JsonRpc.Data;
 using Nethermind.Logging;
-using Nethermind.Trie.Pruning;
-using Newtonsoft.Json;
+using Nethermind.State;
 
-namespace Nethermind.JsonRpc.Modules.Trace
+namespace Nethermind.JsonRpc.Modules.Trace;
+
+public class TraceModuleFactory(
+    IWorldStateManager worldStateManager,
+    IBlockTree blockTree,
+    IJsonRpcConfig jsonRpcConfig,
+    IBlockPreprocessorStep recoveryStep,
+    IRewardCalculatorSource rewardCalculatorSource,
+    IReceiptStorage receiptFinder,
+    ISpecProvider specProvider,
+    IPoSSwitcher poSSwitcher,
+    ILogManager logManager) : ModuleFactoryBase<ITraceRpcModule>
 {
-    public class TraceModuleFactory : ModuleFactoryBase<ITraceRpcModule>
-    {
-        private readonly ReadOnlyDbProvider _dbProvider;
-        private readonly IReadOnlyBlockTree _blockTree;
-        private readonly IReadOnlyTrieStore _trieNodeResolver;
-        private readonly IJsonRpcConfig _jsonRpcConfig;
-        private readonly IReceiptStorage _receiptStorage;
-        private readonly ISpecProvider _specProvider;
-        private readonly ILogManager _logManager;
-        private readonly IBlockPreprocessorStep _recoveryStep;
-        private readonly IRewardCalculatorSource _rewardCalculatorSource;
-        private readonly IPoSSwitcher _poSSwitcher;
+    protected readonly IReadOnlyBlockTree _blockTree = blockTree.AsReadOnly();
+    protected readonly IJsonRpcConfig _jsonRpcConfig = jsonRpcConfig ?? throw new ArgumentNullException(nameof(jsonRpcConfig));
+    protected readonly IReceiptStorage _receiptStorage = receiptFinder ?? throw new ArgumentNullException(nameof(receiptFinder));
+    protected readonly ISpecProvider _specProvider = specProvider ?? throw new ArgumentNullException(nameof(specProvider));
+    protected readonly ILogManager _logManager = logManager ?? throw new ArgumentNullException(nameof(logManager));
+    protected readonly IBlockPreprocessorStep _recoveryStep = recoveryStep ?? throw new ArgumentNullException(nameof(recoveryStep));
+    protected readonly IRewardCalculatorSource _rewardCalculatorSource = rewardCalculatorSource ?? throw new ArgumentNullException(nameof(rewardCalculatorSource));
+    protected readonly IPoSSwitcher _poSSwitcher = poSSwitcher ?? throw new ArgumentNullException(nameof(poSSwitcher));
 
-        public TraceModuleFactory(
-            IDbProvider dbProvider,
-            IBlockTree blockTree,
-            IReadOnlyTrieStore trieNodeResolver,
-            IJsonRpcConfig jsonRpcConfig,
-            IBlockPreprocessorStep recoveryStep,
-            IRewardCalculatorSource rewardCalculatorSource,
-            IReceiptStorage receiptFinder,
-            ISpecProvider specProvider,
-            IPoSSwitcher poSSwitcher,
-            ILogManager logManager)
-        {
-            _dbProvider = dbProvider.AsReadOnly(false);
-            _blockTree = blockTree.AsReadOnly();
-            _trieNodeResolver = trieNodeResolver;
-            _jsonRpcConfig = jsonRpcConfig ?? throw new ArgumentNullException(nameof(jsonRpcConfig));
-            _recoveryStep = recoveryStep ?? throw new ArgumentNullException(nameof(recoveryStep));
-            _rewardCalculatorSource = rewardCalculatorSource ?? throw new ArgumentNullException(nameof(rewardCalculatorSource));
-            _receiptStorage = receiptFinder ?? throw new ArgumentNullException(nameof(receiptFinder));
-            _specProvider = specProvider ?? throw new ArgumentNullException(nameof(specProvider));
-            _poSSwitcher = poSSwitcher ?? throw new ArgumentNullException(nameof(poSSwitcher));
-            _logManager = logManager ?? throw new ArgumentNullException(nameof(logManager));
-            logManager.GetClassLogger();
-        }
+    protected virtual OverridableTxProcessingEnv CreateTxProcessingEnv(IOverridableWorldScope worldScope) => new(worldScope, _blockTree, _specProvider, _logManager);
 
-        public override ITraceRpcModule Create()
-        {
-            ReadOnlyTxProcessingEnv txProcessingEnv =
-                new(_dbProvider, _trieNodeResolver, _blockTree, _specProvider, _logManager);
-
-            IRewardCalculator rewardCalculator =
-                new MergeRpcRewardCalculator(_rewardCalculatorSource.Get(txProcessingEnv.TransactionProcessor),
-                    _poSSwitcher);
-
-            RpcBlockTransactionsExecutor rpcBlockTransactionsExecutor = new(txProcessingEnv.TransactionProcessor, txProcessingEnv.StateProvider);
-
-            ReadOnlyChainProcessingEnv chainProcessingEnv = new(
-                txProcessingEnv,
+    protected virtual ReadOnlyChainProcessingEnv CreateChainProcessingEnv(IOverridableWorldScope worldScope, IBlockProcessor.IBlockTransactionsExecutor transactionsExecutor, IReadOnlyTxProcessingScope scope, IRewardCalculator rewardCalculator) => new(
+                scope,
                 Always.Valid,
                 _recoveryStep,
                 rewardCalculator,
                 _receiptStorage,
-                _dbProvider,
                 _specProvider,
+                _blockTree,
+                worldScope.GlobalStateReader,
                 _logManager,
-                rpcBlockTransactionsExecutor);
+                transactionsExecutor);
 
-            Tracer tracer = new(chainProcessingEnv.StateProvider, chainProcessingEnv.ChainProcessor);
+    public override ITraceRpcModule Create()
+    {
+        IOverridableWorldScope overridableScope = worldStateManager.CreateOverridableWorldScope();
+        OverridableTxProcessingEnv txProcessingEnv = CreateTxProcessingEnv(overridableScope);
+        IReadOnlyTxProcessingScope scope = txProcessingEnv.Build(Keccak.EmptyTreeHash);
 
-            return new TraceRpcModule(_receiptStorage, tracer, _blockTree, _jsonRpcConfig, _specProvider, _logManager);
-        }
+        IRewardCalculator rewardCalculator =
+            new MergeRpcRewardCalculator(_rewardCalculatorSource.Get(scope.TransactionProcessor),
+                _poSSwitcher);
 
-        public static JsonConverter[] Converters =
-        {
-            new ParityTxTraceFromReplayConverter(),
-            new ParityAccountStateChangeConverter(),
-            new ParityTraceActionConverter(),
-            new ParityTraceResultConverter(),
-            new ParityVmOperationTraceConverter(),
-            new ParityVmTraceConverter(),
-            new TransactionForRpcWithTraceTypesConverter()
-        };
+        RpcBlockTransactionsExecutor rpcBlockTransactionsExecutor = new(scope.TransactionProcessor, scope.WorldState);
+        BlockProcessor.BlockValidationTransactionsExecutor executeBlockTransactionsExecutor = new(scope.TransactionProcessor, scope.WorldState);
 
-        public override IReadOnlyCollection<JsonConverter> GetConverters() => Converters;
+        ReadOnlyChainProcessingEnv traceProcessingEnv = CreateChainProcessingEnv(overridableScope, rpcBlockTransactionsExecutor, scope, rewardCalculator);
+        ReadOnlyChainProcessingEnv executeProcessingEnv = CreateChainProcessingEnv(overridableScope, executeBlockTransactionsExecutor, scope, rewardCalculator);
+
+        Tracer tracer = new(scope.WorldState, traceProcessingEnv.ChainProcessor, executeProcessingEnv.ChainProcessor,
+            traceOptions: ProcessingOptions.TraceTransactions);
+
+        return new TraceRpcModule(_receiptStorage, tracer, _blockTree, _jsonRpcConfig, txProcessingEnv);
     }
 }

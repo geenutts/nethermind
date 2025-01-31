@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
+using Autofac.Features.AttributeFilters;
 using DotNetty.Buffers;
 using DotNetty.Common.Utilities;
 using Nethermind.Core.Crypto;
@@ -18,8 +19,8 @@ namespace Nethermind.Network.Rlpx.Handshake
     /// </summary>
     public class HandshakeService : IHandshakeService
     {
-        private static int MacBitsSize = 256;
-        private static int MacBytesSize = MacBitsSize / 8;
+        private static readonly int MacBitsSize = 256;
+        private static readonly int MacBytesSize = MacBitsSize / 8;
 
         private readonly IPrivateKeyGenerator _ephemeralGenerator;
         private readonly ICryptoRandom _cryptoRandom;
@@ -28,6 +29,16 @@ namespace Nethermind.Network.Rlpx.Handshake
         private readonly PrivateKey _privateKey;
         private readonly ILogger _logger;
         private readonly IEcdsa _ecdsa;
+
+        public HandshakeService(
+            IMessageSerializationService messageSerializationService,
+            IEciesCipher eciesCipher,
+            ICryptoRandom cryptoRandom,
+            IEcdsa ecdsa,
+            [KeyFilter(IProtectedPrivateKey.NodeKey)] IProtectedPrivateKey nodeKey,
+            ILogManager logManager)
+        : this(messageSerializationService, eciesCipher, cryptoRandom, ecdsa, nodeKey.Unprotect(), logManager)
+        { }
 
         public HandshakeService(
             IMessageSerializationService messageSerializationService,
@@ -61,7 +72,7 @@ namespace Nethermind.Network.Rlpx.Handshake
                 {
                     Nonce = handshake.InitiatorNonce,
                     PublicKey = _privateKey.PublicKey,
-                    Signature = _ecdsa.Sign(handshake.EphemeralPrivateKey, new Keccak(forSigning)),
+                    Signature = _ecdsa.Sign(handshake.EphemeralPrivateKey, new Hash256(forSigning)),
                     IsTokenUsed = false,
                     EphemeralPublicHash = Keccak.Compute(handshake.EphemeralPrivateKey.PublicKey.Bytes)
                 };
@@ -69,7 +80,7 @@ namespace Nethermind.Network.Rlpx.Handshake
                 IByteBuffer authData = _messageSerializationService.ZeroSerialize(authMessage);
                 try
                 {
-                    byte[] packetData = _eciesCipher.Encrypt(remoteNodeId, authData.ReadAllBytesAsArray(), Array.Empty<byte>());
+                    byte[] packetData = _eciesCipher.Encrypt(remoteNodeId, authData.ReadAllBytesAsArray(), []);
                     handshake.AuthPacket = new Packet(packetData);
                     return handshake.AuthPacket;
                 }
@@ -85,7 +96,7 @@ namespace Nethermind.Network.Rlpx.Handshake
                 {
                     Nonce = handshake.InitiatorNonce,
                     PublicKey = _privateKey.PublicKey,
-                    Signature = _ecdsa.Sign(handshake.EphemeralPrivateKey, new Keccak(forSigning))
+                    Signature = _ecdsa.Sign(handshake.EphemeralPrivateKey, new Hash256(forSigning))
                 };
 
                 IByteBuffer authData = _messageSerializationService.ZeroSerialize(authMessage);
@@ -145,7 +156,7 @@ namespace Nethermind.Network.Rlpx.Handshake
             byte[] staticSharedSecret = SecP256k1.EcdhSerialized(handshake.RemoteNodeId.Bytes, _privateKey.KeyBytes);
             byte[] forSigning = staticSharedSecret.Xor(handshake.InitiatorNonce);
 
-            handshake.RemoteEphemeralPublicKey = _ecdsa.RecoverPublicKey(authMessage.Signature, new Keccak(forSigning));
+            handshake.RemoteEphemeralPublicKey = _ecdsa.RecoverPublicKey(authMessage.Signature, new Hash256(forSigning));
 
             byte[] data;
             if (preEip8Format)
@@ -160,7 +171,7 @@ namespace Nethermind.Network.Rlpx.Handshake
                 IByteBuffer ackData = _messageSerializationService.ZeroSerialize(ackMessage);
                 try
                 {
-                    data = _eciesCipher.Encrypt(handshake.RemoteNodeId, ackData.ReadAllBytesAsArray(), Array.Empty<byte>());
+                    data = _eciesCipher.Encrypt(handshake.RemoteNodeId, ackData.ReadAllBytesAsArray(), []);
                 }
                 finally
                 {
@@ -255,11 +266,11 @@ namespace Nethermind.Network.Rlpx.Handshake
             Span<byte> sharedSecret = ValueKeccak.Compute(tempConcat).BytesAsSpan;
             //            byte[] token = Keccak.Compute(sharedSecret).Bytes;
             sharedSecret.CopyTo(tempConcat.Slice(32, 32));
-            byte[] aesSecret = Keccak.Compute(tempConcat).Bytes;
+            byte[] aesSecret = Keccak.Compute(tempConcat).BytesToArray();
 
             sharedSecret.Clear();
             aesSecret.CopyTo(tempConcat.Slice(32, 32));
-            byte[] macSecret = Keccak.Compute(tempConcat).Bytes;
+            byte[] macSecret = Keccak.Compute(tempConcat).BytesToArray();
 
             ephemeralSharedSecret.Clear();
             handshake.Secrets = new EncryptionSecrets();

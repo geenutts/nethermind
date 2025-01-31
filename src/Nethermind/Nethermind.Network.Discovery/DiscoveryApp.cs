@@ -1,16 +1,11 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
-using System;
-using System.Net;
-using System.Net.Sockets;
-using System.Runtime.InteropServices;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Net.NetworkInformation;
+using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using DotNetty.Handlers.Logging;
-using DotNetty.Transport.Bootstrapping;
 using DotNetty.Transport.Channels;
-using DotNetty.Transport.Channels.Sockets;
 using Nethermind.Config;
 using Nethermind.Core;
 using Nethermind.Core.Attributes;
@@ -40,10 +35,6 @@ public class DiscoveryApp : IDiscoveryApp
     private readonly INetworkStorage _discoveryStorage;
     private readonly INetworkConfig _networkConfig;
 
-    private Task? _discoveryTimerTask;
-
-    private IChannel? _channel;
-    private MultithreadEventLoopGroup? _group;
     private NettyDiscoveryHandler? _discoveryHandler;
     private Task? _storageCommitTask;
 
@@ -87,11 +78,12 @@ public class DiscoveryApp : IDiscoveryApp
         _nodesLocator.Initialize(_nodeTable.MasterNode);
     }
 
-    public void Start()
+    public Task StartAsync()
     {
         try
         {
-            InitializeUdpChannel();
+            Initialize();
+            return Task.CompletedTask;
         }
         catch (Exception e)
         {
@@ -118,7 +110,7 @@ public class DiscoveryApp : IDiscoveryApp
             });
         }
 
-        await StopUdpChannelAsync();
+        Cleanup();
         if (_logger.IsInfo) _logger.Info("Discovery shutdown complete.. please wait for all components to close");
     }
 
@@ -127,44 +119,29 @@ public class DiscoveryApp : IDiscoveryApp
         _discoveryManager.GetNodeLifecycleManager(node);
     }
 
-    private void InitializeUdpChannel()
+    private void Initialize()
     {
         if (_logger.IsDebug)
             _logger.Debug($"Discovery    : udp://{_networkConfig.ExternalIp}:{_networkConfig.DiscoveryPort}");
         ThisNodeInfo.AddInfo("Discovery    :", $"udp://{_networkConfig.ExternalIp}:{_networkConfig.DiscoveryPort}");
 
-        _group = new MultithreadEventLoopGroup(1);
-        Bootstrap bootstrap = new();
-        bootstrap.Group(_group);
-
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-        {
-            bootstrap.ChannelFactory(() => new SocketDatagramChannel(AddressFamily.InterNetwork))
-                .Handler(new ActionChannelInitializer<IDatagramChannel>(InitializeChannel));
-        }
-        else
-        {
-            bootstrap.Channel<SocketDatagramChannel>()
-                .Handler(new ActionChannelInitializer<IDatagramChannel>(InitializeChannel));
-        }
-
-        _bindingTask = bootstrap.BindAsync(IPAddress.Parse(_networkConfig.LocalIp!), _networkConfig.DiscoveryPort)
-            .ContinueWith(
-                t
-                    =>
-                {
-                    if (t.IsFaulted)
-                    {
-                        _logger.Error("Error when establishing discovery connection", t.Exception);
-                    }
-
-                    return _channel = t.Result;
-                });
+        NetworkChange.NetworkAvailabilityChanged += ResetUnreachableStatus;
     }
 
-    private Task? _bindingTask;
+    private void ResetUnreachableStatus(object? sender, NetworkAvailabilityEventArgs e)
+    {
+        if (!e.IsAvailable)
+        {
+            return;
+        }
 
-    private void InitializeChannel(IDatagramChannel channel)
+        foreach (INodeLifecycleManager unreachable in _discoveryManager.GetNodeLifecycleManagers().Where(static x => x.State == NodeLifecycleState.Unreachable))
+        {
+            unreachable.ResetUnreachableStatus();
+        }
+    }
+
+    public void InitializeChannel(IChannel channel)
     {
         _discoveryHandler = new NettyDiscoveryHandler(_discoveryManager, channel, _messageSerializationService,
             _timestamper, _logManager);
@@ -182,8 +159,12 @@ public class DiscoveryApp : IDiscoveryApp
     {
         if (_logger.IsDebug) _logger.Debug("Activated discovery channel.");
 
-        //Make sure this is non blocking code, otherwise netty will not process messages
-        Task.Run(() => OnChannelActivated(_appShutdownSource.Token)).ContinueWith
+        // Make sure this is non blocking code, otherwise netty will not process messages
+        // Explicitly use TaskScheduler.Default, otherwise it will use dotnetty's task scheduler which have a habit of
+        // not working sometimes.
+        Task.Factory
+            .StartNew(() => OnChannelActivated(_appShutdownSource.Token), _appShutdownSource.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default)
+            .ContinueWith
         (
             t =>
             {
@@ -226,7 +207,7 @@ public class DiscoveryApp : IDiscoveryApp
 
                 //Check if we were able to communicate with any trusted nodes or persisted nodes
                 //if so no need to replay bootstrapping, we can start discovery process
-                if (_discoveryManager.GetOrAddNodeLifecycleManagers(x => x.State == NodeLifecycleState.Active).Any())
+                if (_discoveryManager.GetOrAddNodeLifecycleManagers(static x => x.State == NodeLifecycleState.Active).Count != 0)
                 {
                     break;
                 }
@@ -295,7 +276,7 @@ public class DiscoveryApp : IDiscoveryApp
     private void InitializeDiscoveryTimer()
     {
         if (_logger.IsDebug) _logger.Debug("Starting discovery timer");
-        _discoveryTimerTask = RunDiscoveryProcess();
+        _ = RunDiscoveryProcess();
     }
 
     private void InitializeDiscoveryPersistenceTimer()
@@ -304,7 +285,7 @@ public class DiscoveryApp : IDiscoveryApp
         _storageCommitTask = RunDiscoveryPersistenceCommit();
     }
 
-    private async Task StopUdpChannelAsync()
+    private void Cleanup()
     {
         try
         {
@@ -313,40 +294,18 @@ public class DiscoveryApp : IDiscoveryApp
                 _discoveryHandler.OnChannelActivated -= OnChannelActivated;
             }
 
-            if (_bindingTask is not null)
-            {
-                await _bindingTask; // if we are still starting
-            }
-
-            _logger.Info("Stopping discovery udp channel");
-            if (_channel is null)
-            {
-                return;
-            }
-
-            Task closeTask = _channel.CloseAsync();
-            CancellationTokenSource delayCancellation = new();
-            if (await Task.WhenAny(closeTask,
-                    Task.Delay(_discoveryConfig.UdpChannelCloseTimeout, delayCancellation.Token)) != closeTask)
-            {
-                _logger.Error(
-                    $"Could not close udp connection in {_discoveryConfig.UdpChannelCloseTimeout} miliseconds");
-            }
-            else
-            {
-                delayCancellation.Cancel();
-            }
+            NetworkChange.NetworkAvailabilityChanged -= ResetUnreachableStatus;
         }
         catch (Exception e)
         {
-            _logger.Error("Error during udp channel stop process", e);
+            _logger.Error("Error during discovery cleanup", e);
         }
     }
 
     private async Task<bool> InitializeBootnodes(CancellationToken cancellationToken)
     {
         NetworkNode[] bootnodes = NetworkNode.ParseNodes(_discoveryConfig.Bootnodes, _logger);
-        if (!bootnodes.Any())
+        if (bootnodes.Length == 0)
         {
             if (_logger.IsWarn) _logger.Warn("No bootnodes specified in configuration");
             return true;
@@ -383,12 +342,12 @@ public class DiscoveryApp : IDiscoveryApp
                 break;
             }
 
-            if (managers.Any(x => x.State == NodeLifecycleState.Active))
+            if (managers.Any(static x => x.State == NodeLifecycleState.Active))
             {
                 break;
             }
 
-            if (_discoveryManager.GetOrAddNodeLifecycleManagers(x => x.State == NodeLifecycleState.Active).Any())
+            if (_discoveryManager.GetOrAddNodeLifecycleManagers(static x => x.State == NodeLifecycleState.Active).Count != 0)
             {
                 if (_logger.IsTrace)
                     _logger.Trace(
@@ -427,7 +386,7 @@ public class DiscoveryApp : IDiscoveryApp
 
         if (_logger.IsInfo)
             _logger.Info(
-                $"Connected to {reachedNodeCounter} bootnodes, {_discoveryManager.GetOrAddNodeLifecycleManagers(x => x.State == NodeLifecycleState.Active).Count} trusted/persisted nodes");
+                $"Connected to {reachedNodeCounter} bootnodes, {_discoveryManager.GetOrAddNodeLifecycleManagers(static x => x.State == NodeLifecycleState.Active).Count} trusted/persisted nodes");
         return reachedNodeCounter > 0;
     }
 
@@ -474,7 +433,7 @@ public class DiscoveryApp : IDiscoveryApp
                 _logger.Error($"Error during discovery refresh process: {e}");
             }
 
-            int nodesCountAfterDiscovery = _nodeTable.Buckets.Sum(x => x.BondedItemsCount);
+            int nodesCountAfterDiscovery = _nodeTable.Buckets.Sum(static x => x.BondedItemsCount);
             waitTimeTimeMs =
                 nodesCountAfterDiscovery < 16
                     ? 10
@@ -500,9 +459,10 @@ public class DiscoveryApp : IDiscoveryApp
             try
             {
                 IReadOnlyCollection<INodeLifecycleManager> managers = _discoveryManager.GetNodeLifecycleManagers();
+                DateTime utcNow = DateTime.UtcNow;
                 //we need to update all notes to update reputation
                 _discoveryStorage.UpdateNodes(managers.Select(x => new NetworkNode(x.ManagedNode.Id, x.ManagedNode.Host,
-                    x.ManagedNode.Port, x.NodeStats.NewPersistedNodeReputation)).ToArray());
+                    x.ManagedNode.Port, x.NodeStats.NewPersistedNodeReputation(utcNow))).ToArray());
 
                 if (!_discoveryStorage.AnyPendingChange())
                 {
@@ -525,12 +485,41 @@ public class DiscoveryApp : IDiscoveryApp
         NodeAdded?.Invoke(this, e);
     }
 
-    public List<Node> LoadInitialList()
-    {
-        return new List<Node>();
-    }
-
     public event EventHandler<NodeEventArgs>? NodeAdded;
+
+    public async IAsyncEnumerable<Node> DiscoverNodes([EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        // TODO: Rewrote this to properly support throttling.
+        Channel<Node> ch = Channel.CreateBounded<Node>(64); // Some reasonably large value
+        void handler(object? _, NodeEventArgs args)
+        {
+            if (!ch.Writer.TryWrite(args.Node))
+            {
+                // Keep in mind, the channel is already buffered, so forgetting this node is probably fine.
+                _nodesLocator.ShouldThrottle = true;
+            }
+            else
+            {
+                _nodesLocator.ShouldThrottle = false;
+            }
+        }
+
+        try
+        {
+            // TODO: Use lookup like kademlia
+            NodeAdded += handler;
+
+            await foreach (Node node in ch.Reader.ReadAllAsync(cancellationToken))
+            {
+                yield return node;
+            }
+        }
+        finally
+        {
+            NodeAdded -= handler;
+            _nodesLocator.ShouldThrottle = false;
+        }
+    }
 
     public event EventHandler<NodeEventArgs>? NodeRemoved { add { } remove { } }
 }

@@ -5,12 +5,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.Json.Serialization;
+
 using Ethereum.Test.Base;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
 using Nethermind.Db;
 using Nethermind.Logging;
-using Nethermind.State;
 using Nethermind.Trie;
 using NUnit.Framework;
 
@@ -23,9 +24,11 @@ namespace Ethereum.Trie.Test
         [SetUp]
         public void Setup()
         {
-            TrieNode.AllowBranchValues = true;
             _db = new MemDb();
         }
+
+        [TearDown]
+        public void TearDown() => _db?.Dispose();
 
         private static IEnumerable<TrieTest> GetTestPermutations(IEnumerable<TrieTest> tests)
         {
@@ -55,7 +58,9 @@ namespace Ethereum.Trie.Test
         {
             return TestLoader.LoadFromFile<Dictionary<string, TrieTestArraysJson>, TrieTest>(
                 "trietest.json",
-                dwj => dwj.Select(Convert));
+                dwj => dwj.Select(Convert))
+                // Remove branch value tests
+                .Where(t => t.Input.All(kvp => kvp.Key.Length == 32));
         }
 
         private static IEnumerable<TrieTest> LoadSecureTests()
@@ -69,7 +74,9 @@ namespace Ethereum.Trie.Test
         {
             IEnumerable<TrieTest> tests = TestLoader.LoadFromFile<Dictionary<string, TrieTestJson>, TrieTest>(
                 "trieanyorder.json",
-                dwj => dwj.Select(p => new TrieTest(p.Key, p.Value.In.ToList(), p.Value.Root)));
+                dwj => dwj.Select(p => new TrieTest(p.Key, p.Value.In.ToList(), p.Value.Root)))
+                    // Remove branch value tests
+                    .Where(t => t.Input.All(kvp => kvp.Key.Length == 32));
             return GetTestPermutations(tests);
         }
 
@@ -77,7 +84,9 @@ namespace Ethereum.Trie.Test
         {
             IEnumerable<TrieTest> tests = TestLoader.LoadFromFile<Dictionary<string, TrieTestJson>, TrieTest>(
                 "hex_encoded_securetrie_test.json",
-                dwj => dwj.Select(p => new TrieTest(p.Key, p.Value.In.ToList(), p.Value.Root)));
+                dwj => dwj.Select(p => new TrieTest(p.Key, p.Value.In.ToList(), p.Value.Root)))
+                    // Remove branch value tests
+                    .Where(t => t.Input.All(kvp => kvp.Key.Length == 32));
             return GetTestPermutations(tests);
         }
 
@@ -130,7 +139,7 @@ namespace Ethereum.Trie.Test
             string permutationDescription =
                 string.Join(Environment.NewLine, test.Input.Select(p => $"{p.Key} -> {p.Value}"));
 
-            TestContext.WriteLine(Surrounded(permutationDescription));
+            TestContext.Out.WriteLine(Surrounded(permutationDescription));
 
             PatriciaTree patriciaTree = new PatriciaTree(_db, Keccak.EmptyTreeHash, false, true, NullLogManager.Instance);
             foreach (KeyValuePair<string, string> keyValuePair in test.Input)
@@ -146,8 +155,8 @@ namespace Ethereum.Trie.Test
                     ? Bytes.FromHexString(valueString)
                     : Encoding.ASCII.GetBytes(valueString);
 
-                TestContext.WriteLine();
-                TestContext.WriteLine($"Setting {keyString} -> {valueString}");
+                TestContext.Out.WriteLine();
+                TestContext.Out.WriteLine($"Setting {keyString} -> {valueString}");
                 patriciaTree.Set(key.ToPackedByteArray(), value);
             }
 
@@ -303,7 +312,7 @@ namespace Ethereum.Trie.Test
         {
             PatriciaTree patriciaTree = new PatriciaTree(_db, Keccak.EmptyTreeHash, false, true, NullLogManager.Instance);
             patriciaTree.Set(Keccak.Compute("1").Bytes, new byte[0]);
-            patriciaTree.Commit(0);
+            patriciaTree.Commit();
             Assert.That(patriciaTree.RootHash, Is.EqualTo(PatriciaTree.EmptyTreeHash));
         }
 
@@ -313,7 +322,7 @@ namespace Ethereum.Trie.Test
             PatriciaTree patriciaTree = new PatriciaTree(_db, Keccak.EmptyTreeHash, false, true, NullLogManager.Instance);
             patriciaTree.Set(Keccak.Compute("1123").Bytes, new byte[] { 1 });
             patriciaTree.Set(Keccak.Compute("1124").Bytes, new byte[] { 2 });
-            Keccak rootBefore = patriciaTree.RootHash;
+            Hash256 rootBefore = patriciaTree.RootHash;
             patriciaTree.Set(Keccak.Compute("1125").Bytes, new byte[0]);
             Assert.That(patriciaTree.RootHash, Is.EqualTo(rootBefore));
         }
@@ -325,7 +334,7 @@ namespace Ethereum.Trie.Test
             patriciaTree.Set(new Nibble[] { 1, 2, 3, 4 }.ToPackedByteArray(), new byte[] { 1 });
             patriciaTree.Set(new Nibble[] { 1, 2, 3, 4, 5 }.ToPackedByteArray(), new byte[] { 2 });
             patriciaTree.UpdateRootHash();
-            Keccak rootBefore = patriciaTree.RootHash;
+            Hash256 rootBefore = patriciaTree.RootHash;
             patriciaTree.Set(new Nibble[] { 1, 2, 3 }.ToPackedByteArray(), new byte[] { });
             patriciaTree.UpdateRootHash();
             Assert.That(patriciaTree.RootHash, Is.EqualTo(rootBefore));
@@ -338,7 +347,7 @@ namespace Ethereum.Trie.Test
             patriciaTree.Set(Keccak.Compute("1234567").Bytes, new byte[] { 1 });
             patriciaTree.Set(Keccak.Compute("1234501").Bytes, new byte[] { 2 });
             patriciaTree.UpdateRootHash();
-            Keccak rootBefore = patriciaTree.RootHash;
+            Hash256 rootBefore = patriciaTree.RootHash;
             patriciaTree.Set(Keccak.Compute("1234502").Bytes, new byte[0]);
             patriciaTree.UpdateRootHash();
             Assert.That(patriciaTree.RootHash, Is.EqualTo(rootBefore));
